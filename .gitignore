@@ -1,0 +1,28 @@
+# 実データ・生成物（DB、サムネイル、ログ、進捗ファイル）。フォルダ自体はサーバー起動に必要なため除外しない
+data/*
+!data/.gitkeep
+
+# Python仮想環境
+venv/
+venv_win/
+
+# Pythonキャッシュ
+__pycache__/
+*.pyc
+
+# テストキャッシュ
+.pytest_cache/
+
+# CodeGraphのローカルインデックス
+.codegraph/
+
+# 個人環境用設定(config.jsonを上書きするローカル専用設定、rootなど個人情報を含む)
+config-dev.json
+
+# 動画サムネイル生成用の同梱ffmpeg(任意・サイズが大きいためコミットしない)
+# bin/ffmpeg(.exe) またはプロジェクト直下に置くと自動認識される(indexer.pyのfind_ffmpeg参照)
+/bin/
+/ffmpeg.exe
+/ffmpeg
+/ffprobe.exe
+/ffprobe

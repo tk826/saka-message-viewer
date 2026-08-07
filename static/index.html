@@ -1,0 +1,3304 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>坂道メッセージビューア</title>
+<style>
+/* ==========================================================================
+   坂道メッセージビューア スタイル
+   CSS変数でライト(スカイブルー)/ダークを切替
+   ========================================================================== */
+
+:root,
+:root[data-theme="light"] {
+  --bg: #dbf0f9;
+  --bg-gradient: #dbf0f9;
+  --sidebar-bg: #ffffff;
+  --sidebar-border: #d7ebf3;
+  --header-bg: #a9d7ec;
+  --header-border: #d7ebf3;
+  --text: #1b1b1b;
+  --text-sub: #6b7680;
+  --text-faint: #9aa4ad;
+  --bubble-bg: #ffffff;
+  --bubble-text: #1b1b1b;
+  --bubble-shadow: 0 1px 2px rgba(0,0,0,0.12);
+  --bubble-missing-bg: #f2e9e9;
+  --accent: #0a77ab;
+  --accent-text: #ffffff;
+  --hover: #eef8fc;
+  --selected-bg: #dbf0f9;
+  --selected-border: #0a77ab;
+  --divider: #457c98;
+  --divider-text: #ffffff;
+  --input-bg: #f0f8fb;
+  --input-border: #cde6f0;
+  --scrollbar: #bfdeeb;
+  --danger: #d84343;
+  --panel-bg: #ffffff;
+  --panel-border: #d7ebf3;
+  --overlay: rgba(0,0,0,0.6);
+  --mark-bg: #fff1a8;
+  --mark-text: #1b1b1b;
+  --favorite-star: #e8b62c;
+}
+
+:root[data-theme="dark"] {
+  --bg: #1c333e;
+  --bg-gradient: #1c333e;
+  --sidebar-bg: #1c2126;
+  --sidebar-border: #2a3138;
+  --header-bg: #14181c;
+  --header-border: #2a3138;
+  --text: #e7ebee;
+  --text-sub: #9aa7b0;
+  --text-faint: #6d7981;
+  --bubble-bg: #2a3138;
+  --bubble-text: #e7ebee;
+  --bubble-shadow: 0 1px 2px rgba(0,0,0,0.4);
+  --bubble-missing-bg: #3a2c2c;
+  --accent: #166f94;
+  --accent-text: #ffffff;
+  --hover: #212a30;
+  --selected-bg: #1c333e;
+  --selected-border: #166f94;
+  --divider: #234050;
+  --divider-text: #cfe8f2;
+  --input-bg: #242a30;
+  --input-border: #363e46;
+  --scrollbar: #3a4148;
+  --danger: #e06767;
+  --panel-bg: #1c2126;
+  --panel-border: #2a3138;
+  --overlay: rgba(0,0,0,0.75);
+  --mark-bg: #5c5220;
+  --mark-text: #ffe98a;
+  --favorite-star: #e8b62c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1c333e;
+    --bg-gradient: #1c333e;
+    --sidebar-bg: #1c2126;
+    --sidebar-border: #2a3138;
+    --header-bg: #14181c;
+    --header-border: #2a3138;
+    --text: #e7ebee;
+    --text-sub: #9aa7b0;
+    --text-faint: #6d7981;
+    --bubble-bg: #2a3138;
+    --bubble-text: #e7ebee;
+    --bubble-shadow: 0 1px 2px rgba(0,0,0,0.4);
+    --bubble-missing-bg: #3a2c2c;
+    --accent: #166f94;
+    --accent-text: #ffffff;
+    --hover: #212a30;
+    --selected-bg: #1c333e;
+    --selected-border: #166f94;
+    --divider: #234050;
+    --divider-text: #cfe8f2;
+    --input-bg: #242a30;
+    --input-border: #363e46;
+    --scrollbar: #3a4148;
+    --danger: #e06767;
+    --panel-bg: #1c2126;
+    --panel-border: #2a3138;
+    --overlay: rgba(0,0,0,0.75);
+    --mark-bg: #5c5220;
+    --mark-text: #ffe98a;
+    --favorite-star: #e8b62c;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-family, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo",
+    system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+}
+
+#app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------------- Header ---------------- */
+#header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--header-bg);
+  border-bottom: 1px solid var(--header-border);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+#appTitle {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.icon-btn {
+  background: transparent;
+  border: none;
+  font-size: 1.125rem;
+  cursor: pointer;
+  color: var(--text);
+  padding: 6px 8px;
+  border-radius: 6px;
+  line-height: 1;
+}
+.icon-btn:hover { background: var(--hover); }
+
+/* お気に入りボタンはライト/ダーク両方で視認しやすい落ち着いた黄色にする */
+#favoritesBtn { color: var(--favorite-star); }
+
+.btn {
+  background: var(--accent);
+  color: var(--accent-text);
+  border: none;
+  padding: 7px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.btn:hover { filter: brightness(1.08); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-sub);
+  font-weight: 400;
+}
+.btn-ghost:hover { background: var(--hover); }
+
+#searchBar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  flex-wrap: wrap;
+  min-width: 260px;
+}
+
+#searchInput {
+  flex: 1;
+  min-width: 140px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 0.8125rem;
+}
+
+.scope-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.75rem;
+  color: var(--text-sub);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+#searchFrom, #searchTo {
+  padding: 6px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 0.75rem;
+  max-width: 140px;
+}
+
+.range-sep { color: var(--text-faint); font-size: 0.75rem; }
+
+#headerActions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+#reindexStatusBar {
+  background: var(--selected-bg);
+  color: var(--text);
+  font-size: 0.75rem;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--panel-border);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+#reindexStatusBar.is-error,
+#reindexStatusBar.is-interrupted {
+  background: var(--bubble-missing-bg);
+  color: var(--danger);
+}
+
+#reindexStatusRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+#reindexPhaseLabel {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+#reindexDetailText {
+  color: var(--text-sub);
+  white-space: nowrap;
+}
+#reindexStatusBar.is-error #reindexDetailText,
+#reindexStatusBar.is-interrupted #reindexDetailText {
+  color: var(--danger);
+}
+
+#reindexEtaText {
+  color: var(--text-faint);
+  white-space: nowrap;
+  margin-left: auto;
+}
+#reindexStatusBar.is-error #reindexEtaText,
+#reindexStatusBar.is-interrupted #reindexEtaText {
+  color: var(--danger);
+}
+
+#reindexProgressTrack {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  overflow: hidden;
+  position: relative;
+}
+
+#reindexProgressFill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+#reindexStatusBar.is-error #reindexProgressFill,
+#reindexStatusBar.is-interrupted #reindexProgressFill {
+  background: var(--danger);
+}
+
+/* 総数不明フェーズ(scanning)用の不定形プログレスバー */
+#reindexProgressTrack.indeterminate #reindexProgressFill {
+  width: 35% !important;
+  animation: reindex-indeterminate 1.3s ease-in-out infinite;
+}
+
+@keyframes reindex-indeterminate {
+  0%   { margin-left: -35%; }
+  100% { margin-left: 100%; }
+}
+
+/* ---------------- Body layout ---------------- */
+#body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  position: relative;
+}
+
+#sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--sidebar-border);
+  overflow-y: auto;
+  transition: margin-left 0.2s ease;
+}
+
+#memberListWrap { padding: 6px 0; }
+
+.hint {
+  color: var(--text-faint);
+  font-size: 0.8125rem;
+  padding: 16px;
+  text-align: center;
+}
+
+.group-heading {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 12px 14px 4px;
+}
+
+.member-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+}
+.member-item:hover { background: var(--hover); }
+.member-item.selected {
+  background: var(--selected-bg);
+  border-left-color: var(--selected-border);
+}
+
+.member-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.875rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.member-meta {
+  min-width: 0;
+  flex: 1;
+}
+
+.member-name {
+  font-size: 0.875rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 3px;
+}
+
+.member-sub {
+  font-size: 0.6875rem;
+  color: var(--text-sub);
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+/* ---------------- Main ---------------- */
+#main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  background: var(--bg-gradient);
+}
+
+.empty-state {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-sub);
+  font-size: 0.875rem;
+  padding: 20px;
+  text-align: center;
+}
+
+#timelineWrap {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+#timeline {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 4% 16px;
+  scrollbar-color: var(--scrollbar) transparent;
+}
+
+.hidden { display: none !important; }
+
+.load-sentinel {
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 0.75rem;
+  padding: 8px;
+  min-height: 20px;
+}
+
+.date-sep {
+  text-align: center;
+  margin: 14px 0;
+}
+.date-sep span {
+  background: var(--divider);
+  color: var(--divider-text);
+  font-size: 0.6875rem;
+  padding: 3px 12px;
+  border-radius: 10px;
+}
+
+/* ---------------- 日付セパレータ (フローティング表示) ----------------
+   Timelineは間引き型の仮想スクロールのため、.date-sep自体にposition:stickyを
+   付けると間引きの瞬間に表示が飛ぶ。そのため独立した浮遊要素として#timelineWrap
+   に重ねて表示し、スクロール位置に応じてテキストのみ書き換える方式にする。 */
+#stickyDateSep {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  background: var(--divider);
+  color: var(--divider-text);
+  font-size: 0.6875rem;
+  padding: 3px 12px;
+  border-radius: 10px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+  pointer-events: none;
+}
+
+.msg-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  margin: 10px 0;
+  max-width: 70%;
+}
+
+.msg-bubble {
+  background: var(--bubble-bg);
+  color: var(--bubble-text);
+  border-radius: 14px;
+  border-top-left-radius: 4px;
+  box-shadow: var(--bubble-shadow);
+  padding: 8px 10px;
+  /* .msg-bubble-row(flex)の子になったため、幅は内容に応じて伸縮する。
+     min-width:0でテキストの折り返しがflexの最小幅制約に邪魔されないようにする */
+  min-width: 0;
+  word-break: break-word;
+  white-space: pre-wrap;
+  font-size: 0.9062rem;
+  line-height: 1.5;
+}
+
+.msg-bubble.missing-body {
+  background: var(--bubble-missing-bg);
+}
+
+.msg-time {
+  font-size: 0.6562rem;
+  color: var(--text-sub);
+  margin-top: 3px;
+  padding-left: 4px;
+}
+
+.msg-media {
+  margin-bottom: 6px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(0,0,0,0.06);
+  min-height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.msg-media img.thumb-img {
+  max-width: 100%;
+  max-height: 320px;
+  display: block;
+  cursor: pointer;
+  object-fit: contain;
+}
+
+.msg-media video {
+  max-width: 100%;
+  max-height: 360px;
+  display: block;
+  background: #000;
+}
+
+.media-placeholder {
+  width: 220px;
+  height: 140px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+  font-size: 0.75rem;
+  background: var(--input-bg);
+}
+
+.play-badge {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.125rem;
+  pointer-events: none;
+}
+
+.audio-tag {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  font-size: 0.6875rem;
+  padding: 2px 6px;
+  border-radius: 8px;
+  pointer-events: none;
+}
+
+.missing-media {
+  width: 220px;
+  height: 100px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  background: var(--bubble-missing-bg);
+  color: var(--danger);
+  font-size: 0.75rem;
+  opacity: 0.85;
+}
+
+.missing-flag {
+  color: var(--danger);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+/* ---------------- メッセージ行アクション (お気に入り/パスコピー) ---------------- */
+/* バブルとアクション群を横並びにし、バブルのすぐ右にボタンを出す。
+   アクションはflex-shrink:0で幅固定、バブルは残り幅の中で内容に応じて伸縮する。 */
+.msg-bubble-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.msg-row-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0;
+  pointer-events: none;
+  /* 非表示への切り替えだけ遅延させ、バブル→ボタンへのマウス移動中に消えないようにする。
+     表示は遅延なし、非表示は0.2s待ってから、という非対称にする。 */
+  transition: opacity 0.15s ease 0.2s;
+}
+/* ホバー領域はバブル+アクションのラッパー全体にし、隙間を移動する間も維持されるようにする */
+.msg-bubble-row:hover .msg-row-actions,
+.msg-row-actions:hover,
+.msg-row-actions.has-favorite {
+  opacity: 1;
+  pointer-events: auto;
+  transition-delay: 0s;
+}
+
+.msg-action-btn {
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  color: var(--text-sub);
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--bubble-shadow);
+  line-height: 1;
+}
+.msg-action-btn:hover { background: var(--hover); }
+.msg-action-btn.fav-btn.is-favorited { color: var(--favorite-star); }
+
+@media (hover: none) {
+  /* タッチデバイスはホバーできないため、アクションボタンを常時表示にする */
+  .msg-row-actions { opacity: 1; pointer-events: auto; }
+}
+
+#scrollBottomBtn {
+  position: absolute;
+  right: 20px;
+  bottom: 20px;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.125rem;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+}
+
+/* ---------------- Panels (calendar / search) ---------------- */
+.panel {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  left: 12px;
+  max-width: 520px;
+  margin-left: auto;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.2);
+  z-index: 20;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--panel-border);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.panel-body {
+  overflow-y: auto;
+  padding: 10px 12px;
+}
+
+.calendar-year {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-sub);
+  margin: 10px 0 4px;
+}
+
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.calendar-month {
+  background: var(--input-bg);
+  border-radius: 6px;
+  padding: 6px 4px;
+  text-align: center;
+  cursor: pointer;
+  font-size: 0.75rem;
+}
+.calendar-month:hover { background: var(--hover); outline: 1px solid var(--selected-border); }
+.calendar-month .cm-label { font-weight: 600; }
+.calendar-month .cm-count { color: var(--text-sub); font-size: 0.6562rem; }
+
+.calendar-back {
+  padding: 2px 8px;
+  margin-right: 6px;
+  font-size: 0.875rem;
+}
+
+.calendar-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  margin-bottom: 4px;
+}
+.calendar-weekdays span {
+  text-align: center;
+  font-size: 0.6875rem;
+  color: var(--text-sub);
+}
+
+.calendar-daygrid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+
+.calendar-day {
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  font-size: 0.75rem;
+}
+.calendar-day.empty { visibility: hidden; }
+.calendar-day.has-messages {
+  background: var(--input-bg);
+  cursor: pointer;
+}
+.calendar-day.has-messages:hover { background: var(--hover); outline: 1px solid var(--selected-border); }
+.calendar-day.no-messages { color: var(--text-sub); opacity: 0.4; }
+
+.search-result-item {
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--panel-border);
+  cursor: pointer;
+  font-size: 0.8125rem;
+}
+.search-result-item:hover { background: var(--hover); }
+.search-result-item .sr-meta {
+  font-size: 0.6875rem;
+  color: var(--text-sub);
+  margin-bottom: 3px;
+  display: flex;
+  gap: 8px;
+}
+.search-result-item .sr-snippet mark {
+  background: var(--mark-bg);
+  color: var(--mark-text);
+  padding: 0 1px;
+  border-radius: 2px;
+}
+
+/* ---------------- お気に入り一覧パネル ---------------- */
+.favorite-item {
+  display: flex;
+  gap: 8px;
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--panel-border);
+  cursor: pointer;
+  font-size: 0.8125rem;
+  align-items: center;
+}
+.favorite-item:hover { background: var(--hover); }
+
+.favorite-thumb {
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--input-bg);
+}
+
+.favorite-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.favorite-main .fav-meta {
+  font-size: 0.6875rem;
+  color: var(--text-sub);
+  margin-bottom: 3px;
+  display: flex;
+  gap: 8px;
+}
+
+.favorite-main .fav-snippet {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.favorite-unfav-btn {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: #e8b62c;
+  font-size: 1.125rem;
+  cursor: pointer;
+  padding: 4px;
+  line-height: 1;
+}
+.favorite-unfav-btn:hover { background: var(--hover); border-radius: 50%; }
+
+/* ---------------- メディアギャラリーパネル ---------------- */
+#galleryPanel {
+  max-width: 720px;
+}
+
+.gallery-filter-row {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--panel-border);
+  flex-wrap: wrap;
+}
+
+.gallery-filter-btn {
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  color: var(--text-sub);
+  border-radius: 14px;
+  padding: 4px 12px;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.gallery-filter-btn.active {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-color: var(--accent);
+}
+
+#galleryGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.gallery-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+}
+
+.gallery-item-media {
+  position: relative;
+  aspect-ratio: 1;
+  background: var(--input-bg);
+  flex-shrink: 0;
+}
+
+.gallery-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* サムネイルの無い動画/音声用のプレースホルダ（両テーマで視認できるようCSS変数で配色） */
+.gallery-item-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  background: var(--hover);
+  color: var(--text-sub);
+}
+.gallery-item-placeholder .gallery-placeholder-icon {
+  font-size: 1.75rem;
+  line-height: 1;
+}
+.gallery-item-placeholder .gallery-placeholder-label {
+  font-size: 0.6875rem;
+}
+
+.gallery-item .gallery-kind-badge {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  font-size: 0.625rem;
+  padding: 1px 5px;
+  border-radius: 6px;
+  pointer-events: none;
+}
+
+.gallery-item .gallery-jump-btn {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  border: none;
+  border-radius: 50%;
+  width: 22px;
+  height: 22px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.gallery-item .gallery-jump-btn:hover { background: rgba(0,0,0,0.8); }
+
+.gallery-item-meta {
+  padding: 5px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.gallery-item-time {
+  font-size: 0.6875rem;
+  color: var(--text-sub);
+  white-space: nowrap;
+}
+
+.gallery-item-snippet {
+  font-size: 0.75rem;
+  color: var(--text);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+/* ---------------- Lightbox ---------------- */
+#lightbox {
+  position: fixed;
+  inset: 0;
+  background: var(--overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+#lightboxClose {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  color: #fff;
+  font-size: 1.75rem;
+}
+
+#lightboxContent img, #lightboxContent video {
+  max-width: 92vw;
+  max-height: 90vh;
+  display: block;
+}
+
+/* ---------------- Settings modal ---------------- */
+#settingsModal {
+  position: fixed;
+  inset: 0;
+  background: var(--overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 110;
+}
+
+#settingsModalBox {
+  width: 92vw;
+  max-width: 460px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-desc {
+  font-size: 0.8125rem;
+  color: var(--text-sub);
+  margin: 0 0 10px;
+}
+
+.settings-label {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-sub);
+  margin-bottom: 4px;
+}
+
+#settingsRootInput {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--panel-border);
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 0.8125rem;
+}
+
+.settings-error {
+  color: var(--danger);
+  font-size: 0.75rem;
+  margin-top: 8px;
+}
+
+.settings-actions {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.settings-label-spaced {
+  margin-top: 14px;
+}
+
+.settings-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.settings-tab {
+  flex: 1;
+  padding: 9px 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-sub);
+  font-size: 0.75rem;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+.settings-tab:hover { color: var(--text); }
+.settings-tab.active {
+  color: var(--text);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+.settings-tab:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.settings-tab:disabled:hover { color: var(--text-sub); }
+
+.settings-tab-panel.hidden { display: none; }
+
+/* ニックネーム入力・テーマ選択・フォント選択の見た目を統一する */
+#settingsNickname,
+#settingsTheme,
+#settingsFontFamily {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--panel-border);
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 0.8125rem;
+}
+
+#settingsFontSize {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.btn-danger {
+  background: var(--danger);
+  color: #fff;
+}
+
+/* ---------------- Toast ---------------- */
+#toast {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #333;
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 0.8125rem;
+  z-index: 200;
+  box-shadow: 0 3px 12px rgba(0,0,0,0.3);
+}
+#toast.error { background: var(--danger); }
+
+/* ---------------- Responsive ---------------- */
+@media (max-width: 760px) {
+  #appTitle { display: none; }
+  .msg-row { max-width: 88%; }
+  .panel { max-width: none; }
+  #galleryPanel { max-width: none; }
+  #searchFrom, #searchTo { max-width: 110px; }
+}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <header id="header">
+    <h1 id="appTitle">坂道メッセージビューア</h1>
+
+    <div id="searchBar">
+      <input type="text" id="searchInput" placeholder="検索 (3文字以上でFTS検索)" autocomplete="off">
+      <label class="scope-toggle">
+        <input type="checkbox" id="searchScopeAll">
+        <span>全メンバー</span>
+      </label>
+      <input type="date" id="searchFrom" title="開始日">
+      <span class="range-sep">〜</span>
+      <input type="date" id="searchTo" title="終了日">
+      <button id="searchBtn" class="btn">検索</button>
+    </div>
+
+    <div id="headerActions">
+      <button id="calendarBtn" class="icon-btn" title="日付ジャンプ">&#128197;</button>
+      <button id="favoritesBtn" class="icon-btn" title="お気に入り">&#9733;</button>
+      <button id="galleryBtn" class="icon-btn" title="メディアギャラリー">&#128444;&#65039;</button>
+      <button id="reindexBtn" class="btn">更新</button>
+      <button id="settingsBtn" class="icon-btn" title="設定">&#9881;&#65039;</button>
+    </div>
+  </header>
+
+  <div id="reindexStatusBar" class="hidden">
+    <div id="reindexStatusRow">
+      <span id="reindexPhaseLabel"></span>
+      <span id="reindexDetailText"></span>
+      <span id="reindexEtaText"></span>
+    </div>
+    <div id="reindexProgressTrack">
+      <div id="reindexProgressFill"></div>
+    </div>
+  </div>
+
+  <div id="body">
+    <aside id="sidebar">
+      <div id="memberListWrap">
+        <div id="memberListLoading" class="hint">読み込み中...</div>
+        <div id="memberList"></div>
+      </div>
+    </aside>
+
+    <main id="main">
+      <div id="calendarPanel" class="panel hidden">
+        <div class="panel-header">
+          <span>
+            <button id="calendarBackBtn" class="btn btn-ghost calendar-back hidden" title="月一覧に戻る">&#8592;</button>
+            <span id="calendarTitle">日付ジャンプ</span>
+          </span>
+          <button class="btn btn-ghost calendar-close" title="閉じる">&times;</button>
+        </div>
+        <div id="calendarBody" class="panel-body"></div>
+      </div>
+
+      <div id="searchPanel" class="panel hidden">
+        <div class="panel-header">
+          <span id="searchResultTitle">検索結果</span>
+          <button class="btn btn-ghost search-close" title="閉じる">&times;</button>
+        </div>
+        <div id="searchResultBody" class="panel-body"></div>
+      </div>
+
+      <div id="favoritesPanel" class="panel hidden">
+        <div class="panel-header">
+          <span id="favoritesTitle">お気に入り</span>
+          <button class="btn btn-ghost favorites-close" title="閉じる">&times;</button>
+        </div>
+        <div id="favoritesBody" class="panel-body"></div>
+      </div>
+
+      <div id="galleryPanel" class="panel hidden">
+        <div class="panel-header">
+          <span id="galleryTitle">メディアギャラリー</span>
+          <button class="btn btn-ghost gallery-close" title="閉じる">&times;</button>
+        </div>
+        <div class="gallery-filter-row">
+          <button class="gallery-filter-btn active" data-kind="">すべて</button>
+          <button class="gallery-filter-btn" data-kind="image">画像</button>
+          <button class="gallery-filter-btn" data-kind="video">動画</button>
+          <button class="gallery-filter-btn" data-kind="audio">音声</button>
+        </div>
+        <div id="galleryBody" class="panel-body">
+          <div id="galleryGrid"></div>
+          <div id="galleryLoadSentinel" class="load-sentinel hidden"></div>
+        </div>
+      </div>
+
+      <div id="timelineWrap">
+        <div id="emptyState" class="empty-state">
+          <p>左のメンバー一覧から会話を選択してください。</p>
+        </div>
+        <div id="stickyDateSep" class="hidden"></div>
+        <div id="timeline" class="hidden"></div>
+        <div id="scrollBottomBtn" class="hidden" title="最新へ">&#8595;</div>
+      </div>
+    </main>
+  </div>
+
+  <div id="lightbox" class="hidden">
+    <button id="lightboxClose" class="icon-btn">&times;</button>
+    <div id="lightboxContent"></div>
+  </div>
+
+  <div id="settingsModal" class="hidden">
+    <div id="settingsModalBox">
+      <div class="panel-header">
+        <span>設定</span>
+        <button id="settingsCloseBtn" class="btn btn-ghost" title="閉じる">&times;</button>
+      </div>
+      <div id="settingsTabs" class="settings-tabs">
+        <button class="settings-tab active" data-tab="folder">保存先フォルダ</button>
+        <button class="settings-tab" data-tab="display">表示設定</button>
+        <button class="settings-tab" data-tab="danger">初期化</button>
+      </div>
+      <div id="settingsModalBody" class="panel-body">
+        <div id="settingsTabFolder" class="settings-tab-panel">
+          <p class="settings-desc">メッセージが保存されているフォルダを指定してください。</p>
+          <label for="settingsRootInput" class="settings-label">保存先フォルダ（絶対パス）</label>
+          <input type="text" id="settingsRootInput" placeholder="例: C:\hinatazaka_messages">
+          <div id="settingsError" class="settings-error hidden"></div>
+          <div class="settings-actions">
+            <button id="settingsSaveBtn" class="btn">保存して取り込み開始</button>
+          </div>
+        </div>
+
+        <div id="settingsTabDisplay" class="settings-tab-panel hidden">
+          <p class="settings-desc">表示設定（この端末のブラウザに保存されます）</p>
+          <label for="settingsNickname" class="settings-label">ニックネーム（本文中の %%% と置換されます）</label>
+          <input type="text" id="settingsNickname" placeholder="ユーザー">
+
+          <label for="settingsTheme" class="settings-label settings-label-spaced">テーマ</label>
+          <select id="settingsTheme">
+            <option value="">システム設定に従う</option>
+            <option value="light">ライト</option>
+            <option value="dark">ダーク</option>
+          </select>
+
+          <label for="settingsFontFamily" class="settings-label settings-label-spaced">フォント</label>
+          <select id="settingsFontFamily">
+            <option value="">既定（ゴシック体）</option>
+            <option value="serif">明朝体</option>
+            <option value="'UD Digital KyoKasho', 'BIZ UDGothic', sans-serif">UDフォント（読みやすさ重視）</option>
+            <option value="monospace">等幅</option>
+          </select>
+
+          <label for="settingsFontSize" class="settings-label settings-label-spaced">文字サイズ: <span id="settingsFontSizeValue">100%</span></label>
+          <input type="range" id="settingsFontSize" min="80" max="160" step="10" value="100">
+        </div>
+
+        <div id="settingsTabDanger" class="settings-tab-panel hidden">
+          <p class="settings-desc">DB・サムネイル・保存先フォルダ設定をすべて削除し、初回起動時の状態に戻します。元に戻せません。</p>
+          <div id="settingsResetError" class="settings-error hidden"></div>
+          <div class="settings-actions">
+            <button id="settingsResetBtn" class="btn btn-danger">初期化する</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="hidden"></div>
+</div>
+
+<script>
+"use strict";
+/* ==========================================================================
+   坂道メッセージビューア フロントエンド (バニラJS / 外部依存なし)
+   ========================================================================== */
+
+// ---------------------------------------------------------------------------
+// ユーティリティ
+// ---------------------------------------------------------------------------
+
+function qs(sel, root) { return (root || document).querySelector(sel); }
+function ce(tag, cls) {
+  const el = document.createElement(tag);
+  if (cls) el.className = cls;
+  return el;
+}
+function escapeHtml(s) {
+  if (s == null) return "";
+  return s.replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+function applyNicknamePlaceholder(s) {
+  if (s == null) return s;
+  const nickname = DisplayPrefs.load().nickname;
+  return s.replaceAll("%%%", nickname);
+}
+
+function jstDateParts(ts) {
+  // ts は unix epoch 秒 (UTC)。JST = UTC+9。
+  const d = new Date((ts + 9 * 3600) * 1000);
+  return {
+    y: d.getUTCFullYear(),
+    m: d.getUTCMonth() + 1,
+    day: d.getUTCDate(),
+    hh: d.getUTCHours(),
+    mm: d.getUTCMinutes(),
+    dow: d.getUTCDay(),
+  };
+}
+
+function formatDateSep(ts) {
+  const p = jstDateParts(ts);
+  const dowNames = ["日", "月", "火", "水", "木", "金", "土"];
+  return `${p.y}年${p.m}月${p.day}日 (${dowNames[p.dow]})`;
+}
+
+function formatTime(ts) {
+  const p = jstDateParts(ts);
+  return `${String(p.hh).padStart(2, "0")}:${String(p.mm).padStart(2, "0")}`;
+}
+
+function dateKey(ts) {
+  const p = jstDateParts(ts);
+  return `${p.y}-${p.m}-${p.day}`;
+}
+
+function toast(msg, isError) {
+  const el = qs("#toast");
+  el.textContent = msg;
+  el.classList.remove("hidden");
+  el.classList.toggle("error", !!isError);
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => el.classList.add("hidden"), 3500);
+}
+
+async function fetchJson(url, opts) {
+  const res = await fetch(url, opts);
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const j = await res.json();
+      detail = j.detail || JSON.stringify(j);
+    } catch (e) { /* ignore */ }
+    throw new Error(`HTTP ${res.status} ${detail}`);
+  }
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// テーマ
+// ---------------------------------------------------------------------------
+const Theme = {
+  KEY: "msgviewer_theme",
+  init() {
+    const saved = localStorage.getItem(this.KEY);
+    if (saved === "light" || saved === "dark") {
+      document.documentElement.setAttribute("data-theme", saved);
+    }
+    const select = qs("#settingsTheme");
+    select.value = saved === "light" || saved === "dark" ? saved : "";
+    select.addEventListener("change", () => this.set(select.value));
+  },
+  current() {
+    const attr = document.documentElement.getAttribute("data-theme");
+    if (attr) return attr;
+    return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  },
+  set(value) {
+    if (value === "light" || value === "dark") {
+      document.documentElement.setAttribute("data-theme", value);
+      localStorage.setItem(this.KEY, value);
+    } else {
+      document.documentElement.removeAttribute("data-theme");
+      localStorage.removeItem(this.KEY);
+    }
+  },
+};
+
+// ---------------------------------------------------------------------------
+// メディア遅延ロード (IntersectionObserver)
+// ---------------------------------------------------------------------------
+const LazyMedia = {
+  observer: null,
+  init() {
+    this.observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) {
+          this.load(entry.target);
+          this.observer.unobserve(entry.target);
+        }
+      }
+    }, { root: qs("#timeline"), rootMargin: "300px 0px" });
+  },
+  observe(el) {
+    this.observer.observe(el);
+  },
+  load(el) {
+    const src = el.getAttribute("data-src");
+    if (!src) return;
+    if (el.tagName === "IMG") {
+      el.addEventListener("load", () => Timeline.stickToBottomIfNeeded(), { once: true });
+      el.src = src;
+    } else if (el.tagName === "VIDEO") {
+      const source = ce("source");
+      source.src = src;
+      source.type = el.getAttribute("data-type") || "video/mp4";
+      el.appendChild(source);
+    }
+    el.removeAttribute("data-src");
+  },
+};
+
+// ---------------------------------------------------------------------------
+// お気に入り
+// ---------------------------------------------------------------------------
+const Favorites = {
+  ids: new Set(),        // 現在選択中メンバーの msg_id 集合 (★の初期状態反映用)
+  _loadedMember: null,   // ids がどのメンバー分か (同一メンバーへの再ジャンプで再取得を省くため)
+
+  async loadForMember(member) {
+    this.ids = new Set();
+    this._loadedMember = member || null;
+    if (!member) return;
+    try {
+      const data = await fetchJson(`/api/favorites/ids?member=${encodeURIComponent(member)}`);
+      this.ids = new Set(data.msg_ids || []);
+    } catch (e) {
+      console.error(e);
+    }
+  },
+
+  has(msgId) {
+    return this.ids.has(Number(msgId));
+  },
+
+  async toggle(member, msgId, btnEl) {
+    const id = Number(msgId);
+    const nowFav = !this.has(id);
+    try {
+      if (nowFav) {
+        await fetchJson("/api/favorites", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ member, msg_id: id }),
+        });
+        this.ids.add(id);
+      } else {
+        await fetchJson(`/api/favorites?member=${encodeURIComponent(member)}&msg_id=${id}`, { method: "DELETE" });
+        this.ids.delete(id);
+      }
+      if (btnEl) this.applyBtnState(btnEl, nowFav);
+    } catch (e) {
+      console.error(e);
+      toast("お気に入りの更新に失敗しました: " + e.message, true);
+    }
+  },
+
+  applyBtnState(btnEl, isFav) {
+    btnEl.classList.toggle("is-favorited", isFav);
+    btnEl.textContent = isFav ? "★" : "☆"; // ★ / ☆
+    btnEl.title = isFav ? "お気に入り解除" : "お気に入りに追加";
+  },
+};
+
+// ---------------------------------------------------------------------------
+// メッセージ描画
+// ---------------------------------------------------------------------------
+function buildMediaEl(msg) {
+  const wrap = ce("div", "msg-media");
+
+  if (msg.missing) {
+    wrap.classList.add("missing-media-wrap");
+    const ph = ce("div", "missing-media");
+    ph.innerHTML = `&#9888;&#65039;<br>ファイルが見つかりません`;
+    wrap.appendChild(ph);
+    return wrap;
+  }
+
+  if (msg.kind === "image") {
+    const img = ce("img", "thumb-img");
+    img.alt = "画像";
+    img.loading = "lazy";
+    if (msg.thumb_url) {
+      img.setAttribute("data-src", msg.thumb_url);
+      LazyMedia.observe(img);
+    } else if (msg.media_url) {
+      img.setAttribute("data-src", msg.media_url);
+      LazyMedia.observe(img);
+    }
+    img.addEventListener("click", () => openLightbox(msg));
+    wrap.appendChild(img);
+    return wrap;
+  }
+
+  if (msg.kind === "video") {
+    const video = ce("video");
+    video.controls = true;
+    video.preload = "none";
+    if (msg.media_url) {
+      video.setAttribute("data-src", msg.media_url);
+      video.setAttribute("data-type", "video/mp4");
+      LazyMedia.observe(video);
+    }
+    wrap.appendChild(video);
+    const badge = ce("div", "play-badge");
+    badge.innerHTML = "&#9654;";
+    // プレイヤーの操作を邪魔しないよう、再生開始で非表示にする
+    video.addEventListener("play", () => badge.remove());
+    wrap.appendChild(badge);
+    return wrap;
+  }
+
+  if (msg.kind === "audio") {
+    // 拡張子が.mp4のため <video> で再生する
+    const video = ce("video");
+    video.controls = true;
+    video.preload = "none";
+    if (msg.media_url) {
+      video.setAttribute("data-src", msg.media_url);
+      video.setAttribute("data-type", "video/mp4");
+      LazyMedia.observe(video);
+    }
+    wrap.appendChild(video);
+    const tag = ce("div", "audio-tag");
+    tag.innerHTML = "&#127925; 音声";
+    wrap.appendChild(tag);
+    return wrap;
+  }
+
+  return null; // text のみ: メディアなし
+}
+
+function buildMessageRow(msg) {
+  const row = ce("div", "msg-row");
+  row.dataset.msgId = msg.msg_id;
+  row.dataset.ts = msg.ts;
+
+  const bubble = ce("div", "msg-bubble");
+
+  if (msg.missing) {
+    const flag = ce("div", "missing-flag");
+    flag.textContent = "⚠️ 欠損（実ファイルなし）";
+    bubble.appendChild(flag);
+  }
+
+  if (msg.kind !== "text") {
+    const mediaEl = buildMediaEl(msg);
+    if (mediaEl) bubble.appendChild(mediaEl);
+  }
+
+  if (msg.body) {
+    const bodyEl = ce("div", "msg-body");
+    bodyEl.dataset.rawBody = msg.body;
+    bodyEl.textContent = applyNicknamePlaceholder(msg.body);
+    bubble.appendChild(bodyEl);
+  } else if (msg.kind === "text" && !msg.missing) {
+    const bodyEl = ce("div", "msg-body");
+    bodyEl.textContent = "(本文なし)";
+    bodyEl.style.opacity = "0.5";
+    bubble.appendChild(bodyEl);
+  }
+
+  // バブルとアクション群(★/コピー)を横並びにするラッパー。
+  // バブルのすぐ右にボタンが来るようにし、かつバブルの折り返し幅は崩さない。
+  const bubbleRow = ce("div", "msg-bubble-row");
+  bubbleRow.appendChild(bubble);
+  bubbleRow.appendChild(buildMsgRowActions(msg));
+  row.appendChild(bubbleRow);
+
+  const timeEl = ce("div", "msg-time");
+  timeEl.textContent = formatTime(msg.ts);
+  row.appendChild(timeEl);
+
+  return row;
+}
+
+// ★お気に入りボタン・パスコピーボタンをまとめたアクション群。
+// .msg-bubble-row内でバブルの隣に置かれ、ホバー時のみ表示される。
+function buildMsgRowActions(msg) {
+  const actions = ce("div", "msg-row-actions");
+
+  const favBtn = ce("button", "msg-action-btn fav-btn");
+  favBtn.type = "button";
+  const isFav = Favorites.has(msg.msg_id);
+  Favorites.applyBtnState(favBtn, isFav);
+  if (isFav) actions.classList.add("has-favorite"); // お気に入り済みは常時点灯させる
+  favBtn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    await Favorites.toggle(msg.member, msg.msg_id, favBtn);
+    actions.classList.toggle("has-favorite", Favorites.has(msg.msg_id));
+  });
+  actions.appendChild(favBtn);
+
+  if (msg.kind !== "text") {
+    const copyBtn = ce("button", "msg-action-btn copy-path-btn");
+    copyBtn.type = "button";
+    copyBtn.title = "メディアのパスをコピー";
+    copyBtn.textContent = "⧉";
+    copyBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      copyMediaPath(msg.member, msg.msg_id);
+    });
+    actions.appendChild(copyBtn);
+  }
+
+  return actions;
+}
+
+// クリップボードへのコピー。navigator.clipboardはHTTPS/localhost限定のため、
+// LAN IP等の平文http経由アクセス時はexecCommandへフォールバックする。
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (e) {
+      console.error(e);
+    }
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.top = "-9999px";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    if (ok) return true;
+  } catch (e) {
+    console.error(e);
+  }
+  return false;
+}
+
+async function copyMediaPath(member, msgId) {
+  try {
+    const data = await fetchJson(`/api/media-path?member=${encodeURIComponent(member)}&msg_id=${msgId}`);
+    const ok = await copyTextToClipboard(data.path);
+    if (ok) {
+      toast(data.exists ? "パスをコピーしました" : "パスをコピーしました（ファイルは見つかりません）", !data.exists);
+    } else {
+      // コピーにも失敗した場合は手動コピーできるようパスを直接見せる
+      window.prompt("コピーに失敗しました。以下のパスを手動でコピーしてください:", data.path);
+    }
+  } catch (e) {
+    console.error(e);
+    toast("パスの取得に失敗しました: " + e.message, true);
+  }
+}
+
+function buildDateSep(ts) {
+  const sep = ce("div", "date-sep");
+  const span = ce("span");
+  span.textContent = formatDateSep(ts);
+  sep.appendChild(span);
+  return sep;
+}
+
+// ---------------------------------------------------------------------------
+// ライトボックス
+// ---------------------------------------------------------------------------
+function openLightbox(msg) {
+  const lb = qs("#lightbox");
+  const content = qs("#lightboxContent");
+  content.innerHTML = "";
+  if (msg.kind === "image" && msg.media_url) {
+    const img = ce("img");
+    img.src = msg.media_url;
+    content.appendChild(img);
+  }
+  lb.classList.remove("hidden");
+}
+function closeLightbox() {
+  qs("#lightbox").classList.add("hidden");
+  qs("#lightboxContent").innerHTML = "";
+}
+
+// ---------------------------------------------------------------------------
+// タイムライン (仮想スクロール)
+// ---------------------------------------------------------------------------
+const Timeline = {
+  member: null,
+  loadingOlder: false,
+  loadingNewer: false,
+  hasMoreOlder: true,
+  hasMoreNewer: true,
+  PAGE_SIZE: 50,
+  MAX_DOM_ROWS: 400,   // これを超えたら反対側を間引く
+  TRIM_TO: 250,
+
+  el: null,
+
+  init() {
+    this.el = qs("#timeline");
+    this.el.addEventListener("scroll", () => this.onScroll(), { passive: true });
+    qs("#scrollBottomBtn").addEventListener("click", () => this.scrollToBottomAndResync());
+  },
+
+  // フローティング日付見出し(#stickyDateSep)の更新。
+  // 全.date-sepを毎回走査すると行数が多い場合に重くなるため、
+  // スクロールコンテナ上端直下の要素をelementFromPointで1件だけ拾い、
+  // そこから遡って直近の.msg-row(の日付)ないし.date-sepを求める軽量な方法にする。
+  updateStickyDateSep() {
+    const el = this.el;
+    const stickyEl = qs("#stickyDateSep");
+    if (!this.member || el.children.length === 0) {
+      stickyEl.classList.add("hidden");
+      return;
+    }
+    const rect = el.getBoundingClientRect();
+    // コンテナ上端よりわずかに内側の点で判定(境界ちょうどだと取得できないブラウザ対策)
+    const probeY = rect.top + 2;
+    const probeX = rect.left + rect.width / 2;
+    let target = document.elementFromPoint(probeX, probeY);
+    // ヒットした要素から.msg-rowまたは.date-sepまで祖先を辿る
+    let node = target;
+    while (node && node !== el && !node.classList?.contains("msg-row") && !node.classList?.contains("date-sep")) {
+      node = node.parentElement;
+    }
+    if (!node || node === el) {
+      // 取得できなかった場合(スクロール最上部など)は先頭要素から求める
+      node = el.firstElementChild;
+    }
+    let dateText = null;
+    let sepNode = null;
+    while (node) {
+      if (node.classList && node.classList.contains("date-sep")) {
+        dateText = node.textContent;
+        sepNode = node;
+        break;
+      }
+      if (node.classList && node.classList.contains("msg-row") && node.dataset.ts) {
+        dateText = formatDateSep(Number(node.dataset.ts));
+        // この.msg-row自体は.date-sepではないため、対応する実.date-sepを
+        // さらに遡って探す(表示中の日付を示している要素そのもの)。
+        let seekNode = node.previousElementSibling;
+        while (seekNode) {
+          if (seekNode.classList && seekNode.classList.contains("date-sep")) {
+            sepNode = seekNode;
+            break;
+          }
+          seekNode = seekNode.previousElementSibling;
+        }
+        break;
+      }
+      node = node.previousElementSibling;
+    }
+    // 対応する.date-sep要素自体が既にビューポート内に見えているなら、
+    // 通常のセパレータと重複表示されてしまうためsticky側は非表示にする。
+    // 見つからなかった場合は誤って重複表示するより非表示側に倒す。
+    if (dateText && sepNode) {
+      const sepRect = sepNode.getBoundingClientRect();
+      const alreadyVisible = sepRect.bottom > rect.top;
+      if (alreadyVisible) {
+        stickyEl.classList.add("hidden");
+      } else {
+        stickyEl.textContent = dateText;
+        stickyEl.classList.remove("hidden");
+      }
+    } else {
+      stickyEl.classList.add("hidden");
+    }
+  },
+
+  reapplyNicknamePlaceholder() {
+    this.el.querySelectorAll(".msg-body[data-raw-body]").forEach((el) => {
+      el.textContent = applyNicknamePlaceholder(el.dataset.rawBody);
+    });
+  },
+
+  reset(member) {
+    this.member = member;
+    this.loadingOlder = false;
+    this.loadingNewer = false;
+    this.hasMoreOlder = true;
+    this.hasMoreNewer = true;
+    this.el.innerHTML = "";
+    this._globalLastDateKey = null;
+    this._stickToBottom = false;
+    qs("#emptyState").classList.add("hidden");
+    this.el.classList.remove("hidden");
+    qs("#stickyDateSep").classList.add("hidden");
+  },
+
+  // 末尾表示中に遅延読み込み画像が展開されても最下部に追従させる
+  stickToBottomIfNeeded() {
+    if (!this._stickToBottom) return;
+    this.el.scrollTop = this.el.scrollHeight;
+  },
+
+  async loadInitial(member, jumpTs) {
+    this.reset(member);
+    this.el.innerHTML = `<div class="load-sentinel">読み込み中...</div>`;
+    try {
+      let data;
+      if (jumpTs != null) {
+        // ジャンプ先の少し前から読み込む
+        data = await fetchJson(`/api/messages?member=${encodeURIComponent(member)}&before=${jumpTs + 1}&limit=${this.PAGE_SIZE}`);
+      } else {
+        data = await fetchJson(`/api/messages?member=${encodeURIComponent(member)}&limit=${this.PAGE_SIZE}`);
+      }
+      this.el.innerHTML = "";
+      const msgs = data.messages || [];
+      if (msgs.length === 0) {
+        this.el.innerHTML = `<div class="load-sentinel">メッセージがありません</div>`;
+        this.hasMoreOlder = false;
+        this.hasMoreNewer = false;
+        return;
+      }
+      if (msgs.length < this.PAGE_SIZE) {
+        this.hasMoreOlder = false;
+      }
+      this.appendBatch(msgs, "bottom");
+
+      if (jumpTs != null) {
+        // ジャンプ指定がある場合、以降のメッセージも少し読み込んでおく
+        const newer = await fetchJson(`/api/messages?member=${encodeURIComponent(member)}&after=${msgs[msgs.length - 1].ts}&limit=${this.PAGE_SIZE}`);
+        if (newer.messages && newer.messages.length > 0) {
+          this.appendBatch(newer.messages, "bottom");
+          if (newer.messages.length < this.PAGE_SIZE) this.hasMoreNewer = false;
+        } else {
+          this.hasMoreNewer = false;
+        }
+        // ジャンプ先の行までスクロール(before=jumpTs+1 で取得したバッチの末尾が jumpTs のメッセージ)
+        const jumpMsg = msgs.find((m) => m.ts === jumpTs) || msgs[msgs.length - 1];
+        const jumpMsgId = jumpMsg.msg_id;
+        requestAnimationFrame(() => this.scrollToMsgId(jumpMsgId));
+      } else {
+        this.hasMoreNewer = false; // 最新から読んでいるので「新しい方向」はもうない
+        this._stickToBottom = true;
+        requestAnimationFrame(() => { this.el.scrollTop = this.el.scrollHeight; });
+      }
+      requestAnimationFrame(() => this.updateStickyDateSep());
+    } catch (e) {
+      console.error(e);
+      this.el.innerHTML = `<div class="load-sentinel">読み込みに失敗しました: ${escapeHtml(e.message)}</div>`;
+    }
+  },
+
+  scrollToMsgId(msgId) {
+    const row = this.el.querySelector(`.msg-row[data-msg-id="${CSS.escape(String(msgId))}"]`);
+    if (row) {
+      row.scrollIntoView({ block: "center" });
+      const bubble = row.querySelector(".msg-bubble");
+      if (bubble) {
+        bubble.style.transition = "box-shadow 0.6s";
+        const orig = bubble.style.boxShadow;
+        bubble.style.boxShadow = "0 0 0 2px var(--selected-border)";
+        setTimeout(() => { bubble.style.boxShadow = orig; }, 1200);
+      }
+    }
+  },
+
+  // batch: 昇順(古い→新しい)の配列を想定
+  appendBatch(msgs, where) {
+    const frag = document.createDocumentFragment();
+    for (const msg of msgs) {
+      const dk = dateKey(msg.ts);
+      if (dk !== this._globalLastDateKey) {
+        frag.appendChild(buildDateSep(msg.ts));
+      }
+      frag.appendChild(buildMessageRow(msg));
+      this._globalLastDateKey = dk;
+    }
+    if (where === "bottom") {
+      this.el.appendChild(frag);
+    } else {
+      this.el.insertBefore(frag, this.el.firstChild);
+    }
+  },
+
+  onScroll() {
+    const el = this.el;
+    if (el.scrollTop < 400 && this.hasMoreOlder && !this.loadingOlder) {
+      this.loadOlder();
+    }
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 400 && this.hasMoreNewer && !this.loadingNewer) {
+      this.loadNewer();
+    }
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
+    qs("#scrollBottomBtn").classList.toggle("hidden", nearBottom);
+    this._stickToBottom = nearBottom;
+
+    // スクロールが止まっている間は更新不要なので、rAFで1フレームあたり1回に間引く
+    if (!this._stickyRafPending) {
+      this._stickyRafPending = true;
+      requestAnimationFrame(() => {
+        this._stickyRafPending = false;
+        this.updateStickyDateSep();
+      });
+    }
+  },
+
+  async loadOlder() {
+    const firstRow = this.el.querySelector(".msg-row");
+    if (!firstRow) return;
+    const oldestTs = Number(firstRow.dataset.ts);
+    this.loadingOlder = true;
+    const sentinel = ce("div", "load-sentinel");
+    sentinel.textContent = "過去のメッセージを読み込み中...";
+    this.el.insertBefore(sentinel, this.el.firstChild);
+    try {
+      const data = await fetchJson(`/api/messages?member=${encodeURIComponent(this.member)}&before=${oldestTs}&limit=${this.PAGE_SIZE}`);
+      const msgs = data.messages || [];
+      sentinel.remove();
+      if (msgs.length === 0) {
+        this.hasMoreOlder = false;
+        return;
+      }
+      if (msgs.length < this.PAGE_SIZE) this.hasMoreOlder = false;
+
+      // スクロール位置補正: 挿入前の scrollHeight を記録
+      const prevScrollHeight = this.el.scrollHeight;
+      const prevScrollTop = this.el.scrollTop;
+
+      // 日付セパレータ再計算のため、先頭要素の日付を一旦リセットして挿入
+      this._globalLastDateKey = null;
+      this.appendBatch(msgs, "top");
+      // 直後に続く要素との重複日付セパレータを除去
+      this._dedupeDateSeps();
+
+      const newScrollHeight = this.el.scrollHeight;
+      this.el.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
+
+      this.trimIfNeeded("bottom");
+    } catch (e) {
+      console.error(e);
+      sentinel.textContent = "読み込みに失敗しました";
+      setTimeout(() => sentinel.remove(), 2000);
+    } finally {
+      this.loadingOlder = false;
+    }
+  },
+
+  async loadNewer() {
+    const rows = this.el.querySelectorAll(".msg-row");
+    if (rows.length === 0) return;
+    const lastRow = rows[rows.length - 1];
+    const newestTs = Number(lastRow.dataset.ts);
+    this.loadingNewer = true;
+    try {
+      const data = await fetchJson(`/api/messages?member=${encodeURIComponent(this.member)}&after=${newestTs}&limit=${this.PAGE_SIZE}`);
+      const msgs = data.messages || [];
+      if (msgs.length === 0) {
+        this.hasMoreNewer = false;
+        return;
+      }
+      if (msgs.length < this.PAGE_SIZE) this.hasMoreNewer = false;
+      // appendBatch は this._globalLastDateKey (タイムライン末尾の日付) を使うので、
+      // 末尾に追記する場合はリセット不要(そのまま続きとして比較される)
+      const lastKey = dateKey(Number(lastRow.dataset.ts));
+      this._globalLastDateKey = lastKey;
+      this.appendBatch(msgs, "bottom");
+      this.trimIfNeeded("top");
+    } catch (e) {
+      console.error(e);
+    } finally {
+      this.loadingNewer = false;
+    }
+  },
+
+  _dedupeDateSeps() {
+    // 連続する date-sep のうち2つ目以降を削除
+    const children = Array.from(this.el.children);
+    let prevWasSep = false;
+    for (const child of children) {
+      const isSep = child.classList.contains("date-sep");
+      if (isSep && prevWasSep) {
+        child.remove();
+      }
+      prevWasSep = isSep;
+    }
+    // 同一日付が連続するセパレータも統合(念のため二重チェック)
+    const seps = Array.from(this.el.querySelectorAll(".date-sep"));
+    for (let i = 1; i < seps.length; i++) {
+      if (seps[i].textContent === seps[i - 1].textContent) {
+        let node = seps[i - 1].nextSibling;
+        let hasMsgBetween = false;
+        while (node && node !== seps[i]) {
+          if (node.classList && node.classList.contains("msg-row")) hasMsgBetween = true;
+          node = node.nextSibling;
+        }
+        if (!hasMsgBetween) seps[i].remove();
+      }
+    }
+  },
+
+  trimIfNeeded(side) {
+    const rows = this.el.querySelectorAll(".msg-row");
+    if (rows.length <= this.MAX_DOM_ROWS) return;
+    const excess = rows.length - this.TRIM_TO;
+    if (excess <= 0) return;
+
+    if (side === "bottom") {
+      // 下端(新しい方)を間引く。ユーザーが下端付近を見ている場合は間引かない。
+      const el = this.el;
+      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      if (distFromBottom < 800) return;
+      let node = el.lastElementChild;
+      const toRemove = [];
+      let rowCount = 0;
+      while (node && rowCount < excess) {
+        toRemove.push(node);
+        if (node.classList.contains("msg-row")) rowCount++;
+        node = node.previousElementSibling;
+      }
+      for (const n of toRemove) n.remove();
+      this.hasMoreNewer = true;
+    } else {
+      // 上端(古い方)を間引く。ユーザーが上端付近を見ている場合は間引かない。
+      const el = this.el;
+      if (el.scrollTop < 800) return;
+      const prevScrollHeight = el.scrollHeight;
+      const prevScrollTop = el.scrollTop;
+
+      let node = el.firstElementChild;
+      const toRemove = [];
+      let rowCount = 0;
+      while (node && rowCount < excess) {
+        toRemove.push(node);
+        if (node.classList.contains("msg-row")) rowCount++;
+        node = node.nextElementSibling;
+      }
+      for (const n of toRemove) n.remove();
+      this.hasMoreOlder = true;
+
+      const newScrollHeight = el.scrollHeight;
+      el.scrollTop = prevScrollTop - (prevScrollHeight - newScrollHeight);
+    }
+  },
+
+  scrollToBottomAndResync() {
+    if (this.member) {
+      this.loadInitial(this.member, null);
+    }
+  },
+};
+
+// ---------------------------------------------------------------------------
+// サイドバー (メンバー一覧)
+// ---------------------------------------------------------------------------
+const KANJI_DIGITS = { "一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10 };
+
+// グループ名から"◯期生"の期生番号を抽出する。漢数字(一〜十)・算用数字の両方に対応。
+// 該当パターンが無ければnullを返す。
+function extractGeneration(groupName) {
+  const arabicMatch = groupName.match(/(\d+)\s*期生/);
+  if (arabicMatch) return Number(arabicMatch[1]);
+  const kanjiMatch = groupName.match(/([一二三四五六七八九十])期生/);
+  if (kanjiMatch) return KANJI_DIGITS[kanjiMatch[1]] ?? null;
+  return null;
+}
+
+const Sidebar = {
+  threads: [],
+  selectedMember: null,
+
+  async load() {
+    qs("#memberListLoading").classList.remove("hidden");
+    try {
+      const data = await fetchJson("/api/threads");
+      this.threads = data || [];
+      this.render();
+    } catch (e) {
+      console.error(e);
+      qs("#memberListLoading").textContent = "読み込みに失敗しました";
+      toast("メンバー一覧の取得に失敗しました: " + e.message, true);
+      return;
+    }
+    qs("#memberListLoading").classList.add("hidden");
+  },
+
+  render() {
+    const el = qs("#memberList");
+    el.innerHTML = "";
+
+    const groups = new Map(); // groupName -> [thread]
+    const OTHER = "その他";
+    for (const t of this.threads) {
+      const g = t.group || OTHER;
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push(t);
+    }
+
+    // グループ名でソート(「その他」は最後)、"◯期生"を含む場合は期生番号の昇順、
+    // それ以外は文字列比較にフォールバックする。
+    const groupNames = Array.from(groups.keys()).sort((a, b) => {
+      if (a === OTHER) return 1;
+      if (b === OTHER) return -1;
+      const genA = extractGeneration(a);
+      const genB = extractGeneration(b);
+      if (genA !== null && genB !== null) return genA - genB;
+      if (genA !== null) return -1;
+      if (genB !== null) return 1;
+      return a.localeCompare(b, "ja");
+    });
+
+    for (const g of groupNames) {
+      const heading = ce("div", "group-heading");
+      heading.textContent = g;
+      el.appendChild(heading);
+
+      const members = groups.get(g).sort((a, b) => (b.last_ts || 0) - (a.last_ts || 0));
+      for (const t of members) {
+        el.appendChild(this.buildMemberItem(t));
+      }
+    }
+
+    if (this.threads.length === 0) {
+      const hint = ce("div", "hint");
+      hint.textContent = "メンバーがいません（インデックス未実行、または実行中）";
+      el.appendChild(hint);
+    }
+  },
+
+  buildMemberItem(t) {
+    const item = ce("div", "member-item");
+    item.dataset.member = t.member;
+    if (t.member === this.selectedMember) item.classList.add("selected");
+
+    const avatar = ce("div", "member-avatar");
+    avatar.textContent = (t.member || "?").slice(0, 1);
+
+    const meta = ce("div", "member-meta");
+    const name = ce("div", "member-name");
+    name.textContent = t.member;
+    const sub = ce("div", "member-sub");
+    const count = ce("span");
+    count.textContent = `${t.count}件`;
+    const last = ce("span");
+    last.textContent = t.last_ts ? formatLastTs(t.last_ts) : "-";
+    sub.appendChild(count);
+    sub.appendChild(last);
+
+    meta.appendChild(name);
+    meta.appendChild(sub);
+    item.appendChild(avatar);
+    item.appendChild(meta);
+
+    item.addEventListener("click", () => App.selectMember(t.member));
+    return item;
+  },
+
+  setSelected(member) {
+    this.selectedMember = member;
+    qs("#memberList").querySelectorAll(".member-item").forEach((el) => {
+      el.classList.toggle("selected", el.dataset.member === member);
+    });
+  },
+};
+
+function formatLastTs(ts) {
+  const p = jstDateParts(ts);
+  return `${p.y}/${String(p.m).padStart(2, "0")}/${String(p.day).padStart(2, "0")}`;
+}
+
+// ---------------------------------------------------------------------------
+// 検索
+// ---------------------------------------------------------------------------
+const Search = {
+  init() {
+    qs("#searchBtn").addEventListener("click", () => this.run());
+    qs("#searchInput").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") this.run();
+    });
+    qs(".search-close").addEventListener("click", () => this.close());
+  },
+
+  async run() {
+    const q = qs("#searchInput").value.trim();
+    if (!q) return;
+    if (q.length < 3) {
+      toast("3文字未満の場合は簡易検索(LIKE)になります。全文検索(FTS)には3文字以上入力してください。");
+    }
+    const scopeAll = qs("#searchScopeAll").checked;
+    const member = scopeAll ? null : Sidebar.selectedMember;
+    if (!scopeAll && !member) {
+      toast("検索対象のメンバーが選択されていません。先にメンバーを選択するか「全メンバー」にチェックしてください。", true);
+      return;
+    }
+    const from = qs("#searchFrom").value;
+    const to = qs("#searchTo").value;
+
+    const params = new URLSearchParams();
+    params.set("q", q);
+    if (member) params.set("member", member);
+    if (from) params.set("from", from);
+    if (to) params.set("to", to);
+    params.set("limit", "100");
+
+    const panel = qs("#searchPanel");
+    const body = qs("#searchResultBody");
+    panel.classList.remove("hidden");
+    qs("#calendarPanel").classList.add("hidden");
+    qs("#favoritesPanel").classList.add("hidden");
+    qs("#galleryPanel").classList.add("hidden");
+    body.innerHTML = `<div class="hint">検索中...</div>`;
+
+    try {
+      const data = await fetchJson(`/api/search?${params.toString()}`);
+      qs("#searchResultTitle").textContent = `検索結果 (${data.results.length}件${data.used_fts ? "" : " / 簡易検索"})`;
+      body.innerHTML = "";
+      if (data.results.length === 0) {
+        body.innerHTML = `<div class="hint">該当する結果がありません</div>`;
+        return;
+      }
+      for (const r of data.results) {
+        body.appendChild(this.buildResultItem(r));
+      }
+    } catch (e) {
+      console.error(e);
+      body.innerHTML = `<div class="hint">検索に失敗しました: ${escapeHtml(e.message)}</div>`;
+    }
+  },
+
+  buildResultItem(r) {
+    const item = ce("div", "search-result-item");
+    const meta = ce("div", "sr-meta");
+    meta.innerHTML = `<b>${escapeHtml(r.member)}</b><span>${escapeHtml(formatLastTs(r.ts))} ${formatTime(r.ts)}</span>`;
+    const snippet = ce("div", "sr-snippet");
+    // snippet には <mark> タグが含まれる想定。それ以外はエスケープしたいが、
+    // サーバ側が snippet() / body そのまま を返すため、mark 以外のHTML注入を防ぐ簡易サニタイズを行う。
+    snippet.innerHTML = sanitizeSnippet(applyNicknamePlaceholder(r.snippet || ""));
+    item.appendChild(meta);
+    item.appendChild(snippet);
+    item.addEventListener("click", () => {
+      this.close();
+      App.jumpToMessage(r.member, r.ts);
+    });
+    return item;
+  },
+
+  close() {
+    qs("#searchPanel").classList.add("hidden");
+  },
+};
+
+function sanitizeSnippet(raw) {
+  // <mark>...</mark> のみ許可し、それ以外の < > はエスケープする
+  const placeholder1 = " MARK_OPEN ";
+  const placeholder2 = " MARK_CLOSE ";
+  let s = raw.split("<mark>").join(placeholder1).split("</mark>").join(placeholder2);
+  s = escapeHtml(s);
+  s = s.split(placeholder1).join("<mark>").split(placeholder2).join("</mark>");
+  return s;
+}
+
+// ---------------------------------------------------------------------------
+// カレンダー (日付ジャンプ)
+// ---------------------------------------------------------------------------
+const CalendarPanel = {
+  init() {
+    qs("#calendarBtn").addEventListener("click", () => this.toggle());
+    qs(".calendar-close").addEventListener("click", () => this.close());
+    qs("#calendarBackBtn").addEventListener("click", () => this.renderMonths());
+  },
+
+  toggle() {
+    const panel = qs("#calendarPanel");
+    if (panel.classList.contains("hidden")) {
+      this.open();
+    } else {
+      this.close();
+    }
+  },
+
+  close() {
+    qs("#calendarPanel").classList.add("hidden");
+  },
+
+  async open() {
+    if (!Sidebar.selectedMember) {
+      toast("先にメンバーを選択してください", true);
+      return;
+    }
+    qs("#searchPanel").classList.add("hidden");
+    qs("#favoritesPanel").classList.add("hidden");
+    qs("#galleryPanel").classList.add("hidden");
+    qs("#calendarPanel").classList.remove("hidden");
+    await this.renderMonths();
+  },
+
+  async renderMonths() {
+    qs("#calendarBackBtn").classList.add("hidden");
+    qs("#calendarTitle").textContent = "日付ジャンプ";
+    const body = qs("#calendarBody");
+    body.innerHTML = `<div class="hint">読み込み中...</div>`;
+    try {
+      const data = await fetchJson(`/api/calendar?member=${encodeURIComponent(Sidebar.selectedMember)}`);
+      body.innerHTML = "";
+      const byYear = new Map();
+      for (const c of data.calendar) {
+        const [y, m] = c.yearmonth.split("-");
+        if (!byYear.has(y)) byYear.set(y, []);
+        byYear.get(y).push({ month: m, count: c.count });
+      }
+      const years = Array.from(byYear.keys()).sort().reverse();
+      if (years.length === 0) {
+        body.innerHTML = `<div class="hint">データがありません</div>`;
+        return;
+      }
+      for (const y of years) {
+        const heading = ce("div", "calendar-year");
+        heading.textContent = `${y}年`;
+        body.appendChild(heading);
+        const grid = ce("div", "calendar-grid");
+        const months = byYear.get(y).slice().reverse();
+        for (const { month, count } of months) {
+          const cell = ce("div", "calendar-month");
+          cell.innerHTML = `<div class="cm-label">${Number(month)}月</div><div class="cm-count">${count}件</div>`;
+          cell.addEventListener("click", () => this.renderDays(y, month));
+          grid.appendChild(cell);
+        }
+        body.appendChild(grid);
+      }
+    } catch (e) {
+      console.error(e);
+      body.innerHTML = `<div class="hint">読み込みに失敗しました: ${escapeHtml(e.message)}</div>`;
+    }
+  },
+
+  async renderDays(year, month) {
+    const yearmonth = `${year}-${month}`;
+    qs("#calendarBackBtn").classList.remove("hidden");
+    qs("#calendarTitle").textContent = `${year}年${Number(month)}月`;
+    const body = qs("#calendarBody");
+    body.innerHTML = `<div class="hint">読み込み中...</div>`;
+    try {
+      const data = await fetchJson(
+        `/api/calendar?member=${encodeURIComponent(Sidebar.selectedMember)}&yearmonth=${yearmonth}`
+      );
+      const countByDay = new Map();
+      for (const d of data.days) {
+        const day = Number(d.date.split("-")[2]);
+        countByDay.set(day, d.count);
+      }
+
+      body.innerHTML = "";
+      const weekdaysRow = ce("div", "calendar-weekdays");
+      for (const w of ["日", "月", "火", "水", "木", "金", "土"]) {
+        const span = document.createElement("span");
+        span.textContent = w;
+        weekdaysRow.appendChild(span);
+      }
+      body.appendChild(weekdaysRow);
+
+      const firstOfMonth = new Date(Number(year), Number(month) - 1, 1);
+      const daysInMonth = new Date(Number(year), Number(month), 0).getDate();
+      const startWeekday = firstOfMonth.getDay();
+
+      const grid = ce("div", "calendar-daygrid");
+      for (let i = 0; i < startWeekday; i++) {
+        grid.appendChild(ce("div", "calendar-day empty"));
+      }
+      for (let day = 1; day <= daysInMonth; day++) {
+        const count = countByDay.get(day);
+        const cell = ce("div", `calendar-day ${count ? "has-messages" : "no-messages"}`);
+        cell.textContent = day;
+        if (count) {
+          cell.title = `${count}件`;
+          const dateStr = `${year}-${month}-${String(day).padStart(2, "0")}`;
+          cell.addEventListener("click", () => {
+            this.close();
+            App.jumpToDate(Sidebar.selectedMember, dateStr);
+          });
+        }
+        grid.appendChild(cell);
+      }
+      body.appendChild(grid);
+    } catch (e) {
+      console.error(e);
+      body.innerHTML = `<div class="hint">読み込みに失敗しました: ${escapeHtml(e.message)}</div>`;
+    }
+  },
+};
+
+// ---------------------------------------------------------------------------
+// お気に入り一覧パネル
+// ---------------------------------------------------------------------------
+const FavoritesPanel = {
+  loading: false,
+  hasMore: true,
+  oldestCreatedAt: null,
+  PAGE_SIZE: 50,
+
+  init() {
+    qs("#favoritesBtn").addEventListener("click", () => this.toggle());
+    qs(".favorites-close").addEventListener("click", () => this.close());
+    qs("#favoritesBody").addEventListener("scroll", () => this.onScroll());
+  },
+
+  toggle() {
+    const panel = qs("#favoritesPanel");
+    if (panel.classList.contains("hidden")) {
+      this.open();
+    } else {
+      this.close();
+    }
+  },
+
+  async open() {
+    // ギャラリーと同様、選択中メンバーが無いと何を表示すべきか決まらないため開かない
+    if (!Sidebar.selectedMember) {
+      toast("先にメンバーを選択してください", true);
+      return;
+    }
+    // 他パネルと同時に開かない
+    qs("#searchPanel").classList.add("hidden");
+    qs("#calendarPanel").classList.add("hidden");
+    qs("#galleryPanel").classList.add("hidden");
+    qs("#favoritesPanel").classList.remove("hidden");
+    qs("#favoritesTitle").textContent = `お気に入り — ${Sidebar.selectedMember}`;
+    await this.reload();
+  },
+
+  close() {
+    qs("#favoritesPanel").classList.add("hidden");
+  },
+
+  async reload() {
+    this.hasMore = true;
+    this.oldestCreatedAt = null;
+    const body = qs("#favoritesBody");
+    body.innerHTML = `<div class="hint">読み込み中...</div>`;
+    try {
+      const data = await fetchJson(`/api/favorites?limit=${this.PAGE_SIZE}&member=${encodeURIComponent(Sidebar.selectedMember)}`);
+      body.innerHTML = "";
+      const favs = data.favorites || [];
+      if (favs.length === 0) {
+        body.innerHTML = `<div class="hint">このメンバーのお気に入りはまだありません</div>`;
+        this.hasMore = false;
+        return;
+      }
+      for (const f of favs) body.appendChild(this.buildItem(f));
+      this.oldestCreatedAt = favs[favs.length - 1].created_at;
+      if (favs.length < this.PAGE_SIZE) this.hasMore = false;
+    } catch (e) {
+      console.error(e);
+      body.innerHTML = `<div class="hint">読み込みに失敗しました: ${escapeHtml(e.message)}</div>`;
+    }
+  },
+
+  async loadMore() {
+    if (this.loading || !this.hasMore || this.oldestCreatedAt == null) return;
+    this.loading = true;
+    try {
+      const data = await fetchJson(`/api/favorites?limit=${this.PAGE_SIZE}&before=${this.oldestCreatedAt}&member=${encodeURIComponent(Sidebar.selectedMember)}`);
+      const favs = data.favorites || [];
+      if (favs.length === 0) {
+        this.hasMore = false;
+        return;
+      }
+      const body = qs("#favoritesBody");
+      for (const f of favs) body.appendChild(this.buildItem(f));
+      this.oldestCreatedAt = favs[favs.length - 1].created_at;
+      if (favs.length < this.PAGE_SIZE) this.hasMore = false;
+    } catch (e) {
+      console.error(e);
+    } finally {
+      this.loading = false;
+    }
+  },
+
+  onScroll() {
+    const body = qs("#favoritesBody");
+    if (body.scrollHeight - body.scrollTop - body.clientHeight < 200) {
+      this.loadMore();
+    }
+  },
+
+  buildItem(f) {
+    const item = ce("div", "favorite-item");
+
+    const thumbSrc = f.thumb_url || f.media_url;
+    if (thumbSrc) {
+      const img = ce("img", "favorite-thumb");
+      img.loading = "lazy";
+      img.src = thumbSrc;
+      img.alt = "";
+      item.appendChild(img);
+    }
+
+    const main = ce("div", "favorite-main");
+    const meta = ce("div", "fav-meta");
+    const memberEl = ce("b");
+    memberEl.textContent = f.member;
+    const timeEl = ce("span");
+    timeEl.textContent = `${formatLastTs(f.ts)} ${formatTime(f.ts)}`;
+    meta.appendChild(memberEl);
+    meta.appendChild(timeEl);
+
+    const snippet = ce("div", "fav-snippet");
+    snippet.textContent = f.body ? applyNicknamePlaceholder(f.body) : (f.kind !== "text" ? `[${f.kind}]` : "");
+
+    main.appendChild(meta);
+    main.appendChild(snippet);
+    item.appendChild(main);
+
+    const unfavBtn = ce("button", "favorite-unfav-btn");
+    unfavBtn.type = "button";
+    unfavBtn.title = "お気に入り解除";
+    unfavBtn.textContent = "★";
+    unfavBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      try {
+        await fetchJson(`/api/favorites?member=${encodeURIComponent(f.member)}&msg_id=${f.msg_id}`, { method: "DELETE" });
+        Favorites.ids.delete(Number(f.msg_id));
+        item.remove();
+        // 現在表示中タイムラインに同じメッセージがあれば★表示も同期する
+        const row = Timeline.el.querySelector(`.msg-row[data-msg-id="${CSS.escape(String(f.msg_id))}"]`);
+        if (row) {
+          const btn = row.querySelector(".fav-btn");
+          if (btn) Favorites.applyBtnState(btn, false);
+          const actions = row.querySelector(".msg-row-actions");
+          if (actions) actions.classList.remove("has-favorite");
+        }
+      } catch (e2) {
+        console.error(e2);
+        toast("お気に入り解除に失敗しました: " + e2.message, true);
+      }
+    });
+    item.appendChild(unfavBtn);
+
+    item.addEventListener("click", () => {
+      this.close();
+      App.jumpToMessage(f.member, f.ts);
+    });
+
+    return item;
+  },
+};
+
+// ---------------------------------------------------------------------------
+// メディアギャラリーパネル
+// ---------------------------------------------------------------------------
+const GalleryPanel = {
+  loading: false,
+  hasMore: true,
+  oldestTs: null,
+  kind: "",   // "" = すべて
+  PAGE_SIZE: 60,
+
+  init() {
+    qs("#galleryBtn").addEventListener("click", () => this.toggle());
+    qs(".gallery-close").addEventListener("click", () => this.close());
+    qs("#galleryBody").addEventListener("scroll", () => this.onScroll());
+    for (const btn of document.querySelectorAll(".gallery-filter-btn")) {
+      btn.addEventListener("click", () => this.setKind(btn.dataset.kind, btn));
+    }
+  },
+
+  toggle() {
+    const panel = qs("#galleryPanel");
+    if (panel.classList.contains("hidden")) {
+      this.open();
+    } else {
+      this.close();
+    }
+  },
+
+  async open() {
+    if (!Sidebar.selectedMember) {
+      toast("先にメンバーを選択してください", true);
+      return;
+    }
+    qs("#searchPanel").classList.add("hidden");
+    qs("#calendarPanel").classList.add("hidden");
+    qs("#favoritesPanel").classList.add("hidden");
+    qs("#galleryPanel").classList.remove("hidden");
+    await this.reload();
+  },
+
+  close() {
+    qs("#galleryPanel").classList.add("hidden");
+  },
+
+  setKind(kind, btnEl) {
+    if (this.kind === kind) return;
+    this.kind = kind;
+    document.querySelectorAll(".gallery-filter-btn").forEach((b) => b.classList.toggle("active", b === btnEl));
+    this.reload();
+  },
+
+  async reload() {
+    this.hasMore = true;
+    this.oldestTs = null;
+    const grid = qs("#galleryGrid");
+    grid.innerHTML = `<div class="hint">読み込み中...</div>`;
+    qs("#galleryLoadSentinel").classList.add("hidden");
+    try {
+      const items = await this.fetchPage();
+      grid.innerHTML = "";
+      if (items.length === 0) {
+        grid.innerHTML = `<div class="hint">メディアがありません</div>`;
+      } else {
+        for (const item of items) grid.appendChild(this.buildItem(item));
+      }
+    } catch (e) {
+      console.error(e);
+      grid.innerHTML = `<div class="hint">読み込みに失敗しました: ${escapeHtml(e.message)}</div>`;
+    }
+  },
+
+  async fetchPage() {
+    const params = new URLSearchParams();
+    params.set("member", Sidebar.selectedMember);
+    if (this.kind) params.set("kind", this.kind);
+    params.set("limit", String(this.PAGE_SIZE));
+    if (this.oldestTs != null) params.set("before", String(this.oldestTs));
+    const data = await fetchJson(`/api/media-list?${params.toString()}`);
+    const items = data.items || [];
+    this.hasMore = !!data.has_more;
+    if (items.length > 0) this.oldestTs = items[items.length - 1].ts;
+    return items;
+  },
+
+  async loadMore() {
+    if (this.loading || !this.hasMore) return;
+    this.loading = true;
+    const sentinel = qs("#galleryLoadSentinel");
+    sentinel.textContent = "読み込み中...";
+    sentinel.classList.remove("hidden");
+    try {
+      const items = await this.fetchPage();
+      const grid = qs("#galleryGrid");
+      for (const item of items) grid.appendChild(this.buildItem(item));
+    } catch (e) {
+      console.error(e);
+    } finally {
+      this.loading = false;
+      sentinel.classList.add("hidden");
+    }
+  },
+
+  onScroll() {
+    const body = qs("#galleryBody");
+    if (body.scrollHeight - body.scrollTop - body.clientHeight < 200) {
+      this.loadMore();
+    }
+  },
+
+  buildItem(msg) {
+    const cell = ce("div", "gallery-item");
+    const media = ce("div", "gallery-item-media");
+
+    // サムネイルが無い(動画/音声はindexerがサムネを作らない)場合、<img>にmedia_urlをそのまま
+    // 突っ込むと何も表示されない空タイルになってしまうため、種別に応じたプレースホルダを出す。
+    const thumbSrc = msg.thumb_url || (msg.kind === "image" ? msg.media_url : null);
+    const hasThumb = !!thumbSrc;
+    if (thumbSrc) {
+      const img = ce("img");
+      img.loading = "lazy";
+      img.src = thumbSrc;
+      img.alt = "";
+      media.appendChild(img);
+    } else if (msg.kind === "video" || msg.kind === "audio") {
+      const placeholder = ce("div", "gallery-item-placeholder");
+      const icon = ce("div", "gallery-placeholder-icon");
+      icon.textContent = msg.kind === "video" ? "▶" : "🎵";
+      const label = ce("div", "gallery-placeholder-label");
+      label.textContent = msg.kind === "video" ? "動画" : "音声";
+      placeholder.appendChild(icon);
+      placeholder.appendChild(label);
+      media.appendChild(placeholder);
+    }
+
+    // プレースホルダに既に種別ラベルがあるため、バッジは重複させない
+    // (サムネイルがある場合のみ、サムネ上に種別を示すバッジを重ねる)
+    if (hasThumb && (msg.kind === "video" || msg.kind === "audio")) {
+      const badge = ce("div", "gallery-kind-badge");
+      badge.textContent = msg.kind === "video" ? "動画" : "音声";
+      media.appendChild(badge);
+    }
+
+    const jumpBtn = ce("button", "gallery-jump-btn");
+    jumpBtn.type = "button";
+    jumpBtn.title = "このメッセージへジャンプ";
+    jumpBtn.textContent = "→";
+    jumpBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.close();
+      App.jumpToMessage(msg.member, msg.ts);
+    });
+    media.appendChild(jumpBtn);
+
+    cell.appendChild(media);
+
+    const meta = ce("div", "gallery-item-meta");
+    const timeEl = ce("div", "gallery-item-time");
+    timeEl.textContent = `${formatLastTs(msg.ts)} ${formatTime(msg.ts)}`;
+    meta.appendChild(timeEl);
+    if (msg.body) {
+      const snippet = ce("div", "gallery-item-snippet");
+      snippet.textContent = applyNicknamePlaceholder(msg.body);
+      meta.appendChild(snippet);
+    }
+    cell.appendChild(meta);
+
+    // クリック挙動: 画像はライトボックスで開く。動画/音声・ライトボックス非対応時は
+    // タイムラインへジャンプする。どの場合も右下の小さな「→」ボタンから
+    // 必ずタイムラインへジャンプできるようにしておく。
+    cell.addEventListener("click", () => {
+      if (msg.kind === "image") {
+        openLightbox(msg);
+      } else {
+        this.close();
+        App.jumpToMessage(msg.member, msg.ts);
+      }
+    });
+
+    return cell;
+  },
+};
+
+// ---------------------------------------------------------------------------
+// 表示設定 (フォント・文字サイズ。ブラウザのlocalStorageに保存)
+// ---------------------------------------------------------------------------
+const DisplayPrefs = {
+  STORAGE_KEY: "msgviewer_display_prefs",
+  DEFAULT_FONT_SIZE: 100,
+  DEFAULT_NICKNAME: "ユーザー",
+
+  load() {
+    let prefs = { fontFamily: "", fontSize: this.DEFAULT_FONT_SIZE, nickname: this.DEFAULT_NICKNAME };
+    try {
+      const raw = localStorage.getItem(this.STORAGE_KEY);
+      if (raw) prefs = { ...prefs, ...JSON.parse(raw) };
+      if (!prefs.nickname) prefs.nickname = this.DEFAULT_NICKNAME;
+    } catch (e) {
+      console.error(e);
+    }
+    return prefs;
+  },
+
+  save(prefs) {
+    try {
+      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(prefs));
+    } catch (e) {
+      console.error(e);
+    }
+  },
+
+  apply(prefs) {
+    const root = document.documentElement;
+    if (prefs.fontFamily) {
+      root.style.setProperty("--font-family", prefs.fontFamily);
+    } else {
+      root.style.removeProperty("--font-family");
+    }
+    root.style.fontSize = `${prefs.fontSize}%`;
+  },
+
+  init() {
+    const prefs = this.load();
+    this.apply(prefs);
+
+    const nicknameInput = qs("#settingsNickname");
+    const familySelect = qs("#settingsFontFamily");
+    const sizeInput = qs("#settingsFontSize");
+    const sizeValue = qs("#settingsFontSizeValue");
+
+    nicknameInput.value = prefs.nickname;
+    familySelect.value = prefs.fontFamily || "";
+    sizeInput.value = prefs.fontSize;
+    sizeValue.textContent = `${prefs.fontSize}%`;
+
+    nicknameInput.addEventListener("input", () => {
+      const current = this.load();
+      current.nickname = nicknameInput.value.trim() || this.DEFAULT_NICKNAME;
+      this.save(current);
+      Timeline.reapplyNicknamePlaceholder();
+    });
+
+    familySelect.addEventListener("change", () => {
+      const current = this.load();
+      current.fontFamily = familySelect.value;
+      this.save(current);
+      this.apply(current);
+    });
+
+    sizeInput.addEventListener("input", () => {
+      sizeValue.textContent = `${sizeInput.value}%`;
+      const current = this.load();
+      current.fontSize = Number(sizeInput.value);
+      this.save(current);
+      this.apply(current);
+    });
+  },
+};
+
+// ---------------------------------------------------------------------------
+// 設定 (メッセージ保存フォルダの指定)
+// ---------------------------------------------------------------------------
+const Settings = {
+  configured: false,
+  TABS: ["folder", "display", "danger"],
+
+  init() {
+    qs("#settingsBtn").addEventListener("click", () => this.open());
+    qs("#settingsCloseBtn").addEventListener("click", () => this.close());
+    qs("#settingsSaveBtn").addEventListener("click", () => this.save());
+    qs("#settingsRootInput").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") this.save();
+    });
+    qs("#settingsResetBtn").addEventListener("click", () => this.reset());
+
+    for (const btn of document.querySelectorAll(".settings-tab")) {
+      btn.addEventListener("click", () => this.switchTab(btn.dataset.tab));
+    }
+  },
+
+  switchTab(tab) {
+    for (const name of this.TABS) {
+      const isActive = name === tab;
+      qs(`.settings-tab[data-tab="${name}"]`).classList.toggle("active", isActive);
+      qs(`#settingsTab${name.charAt(0).toUpperCase()}${name.slice(1)}`).classList.toggle("hidden", !isActive);
+    }
+  },
+
+  async checkOnStartup() {
+    try {
+      const data = await fetchJson("/api/settings");
+      this.configured = !!data.configured;
+      if (data.root) qs("#settingsRootInput").value = data.root;
+      if (!this.configured) {
+        this.open(true);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  },
+
+  open(forced = false) {
+    qs("#settingsError").classList.add("hidden");
+    qs("#settingsModal").classList.remove("hidden");
+    qs("#settingsCloseBtn").classList.toggle("hidden", forced && !this.configured);
+    this.switchTab("folder");
+    for (const name of ["display", "danger"]) {
+      qs(`.settings-tab[data-tab="${name}"]`).disabled = !this.configured;
+    }
+  },
+
+  close() {
+    if (!this.configured) {
+      toast("先にメッセージ保存フォルダを設定してください", true);
+      return;
+    }
+    qs("#settingsModal").classList.add("hidden");
+  },
+
+  async save() {
+    const input = qs("#settingsRootInput");
+    const root = input.value.trim();
+    const errEl = qs("#settingsError");
+    errEl.classList.add("hidden");
+    if (!root) {
+      errEl.textContent = "フォルダパスを入力してください";
+      errEl.classList.remove("hidden");
+      return;
+    }
+    const btn = qs("#settingsSaveBtn");
+    btn.disabled = true;
+    try {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ root }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || `HTTP ${res.status}`);
+      }
+      this.configured = true;
+      qs("#settingsModal").classList.add("hidden");
+      toast("保存先フォルダを設定しました。取り込みを開始します。");
+      Reindex.showRunning({ phase: "scanning", message: "取り込みを開始しています..." });
+      Reindex.startActivePolling();
+      Reindex.poll();
+      await Sidebar.load();
+    } catch (e) {
+      console.error(e);
+      errEl.textContent = e.message;
+      errEl.classList.remove("hidden");
+    } finally {
+      btn.disabled = false;
+    }
+  },
+
+  async reset() {
+    const errEl = qs("#settingsResetError");
+    errEl.classList.add("hidden");
+
+    const ok = window.confirm(
+      "DB・サムネイル・保存先フォルダ設定をすべて削除します。この操作は元に戻せません。実行しますか？"
+    );
+    if (!ok) return;
+
+    const btn = qs("#settingsResetBtn");
+    btn.disabled = true;
+    try {
+      const res = await fetch("/api/reset", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || `HTTP ${res.status}`);
+      }
+      toast("初期化しました。");
+      setTimeout(() => location.reload(), 600);
+    } catch (e) {
+      console.error(e);
+      errEl.textContent = e.message;
+      errEl.classList.remove("hidden");
+    } finally {
+      btn.disabled = false;
+    }
+  },
+};
+
+// ---------------------------------------------------------------------------
+// 再インデックス
+// ---------------------------------------------------------------------------
+const PHASE_LABELS = {
+  scanning: "走査中...",
+  upsert: "DB投入中",
+  thumbs: "サムネ生成中",
+  done: "完了",
+  error: "エラー",
+  interrupted: "中断",
+};
+
+function formatEta(sec) {
+  if (sec === null || sec === undefined || !isFinite(sec) || sec < 0) return "";
+  if (sec < 60) return `残り約${Math.ceil(sec)}秒`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `残り約${min}分`;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return `残り約${h}時間${m}分`;
+}
+
+const Reindex = {
+  activePolling: null,   // 実行中: 2秒間隔
+  idlePolling: null,     // 非実行中: 30秒間隔 (CLI起動を検知するため完全停止はしない)
+  lastRunning: false,
+
+  init() {
+    qs("#reindexBtn").addEventListener("click", () => this.start());
+    this.checkStatusOnLoad();
+    this.startIdlePolling();
+  },
+
+  async checkStatusOnLoad() {
+    try {
+      const status = await fetchJson("/api/reindex/status");
+      // ページ読み込み時点で中断/エラー状態だった場合も一目で分かるように表示する
+      // (completed の場合はトースト通知やデータ再読み込みまではしない = 誤発火防止)。
+      // progress.json 由来 (source: "file") の phase のみを見る。
+      // プロセス内 _reindex_state.last_error は "already_running" のような
+      // 内部的な早期リターン理由も含みうるため、ここでは参照しない
+      // (誤ってユーザーにエラー扱いで見せてしまうのを防ぐ)。
+      const p = status.progress;
+      if (!status.running && p && p.source === "file") {
+        if (p.phase === "interrupted") {
+          this.showFinished("interrupted", this.interruptedDetail(p));
+          return;
+        }
+        if (p.phase === "error") {
+          this.showFinished("error", p.message || "エラーが発生しました");
+          return;
+        }
+      }
+      this.applyStatus(status);
+    } catch (e) {
+      console.error(e);
+    }
+  },
+
+  async start() {
+    const btn = qs("#reindexBtn");
+    btn.disabled = true;
+    this.showRunning({ phase: "scanning", message: "更新を開始しています..." });
+    try {
+      const res = await fetch("/api/reindex", { method: "POST" });
+      if (res.status === 409) {
+        toast("すでに実行中です");
+        this.startActivePolling();
+        this.poll();
+        return;
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      this.startActivePolling();
+      this.poll();
+    } catch (e) {
+      console.error(e);
+      toast("更新の開始に失敗しました: " + e.message, true);
+      btn.disabled = false;
+      this.hideBar();
+    }
+  },
+
+  // --- ポーリング制御 ---------------------------------------------------
+  // 注意: ここでは即時 poll() を呼ばない。applyStatus() から呼ばれる経路があり、
+  // (取得済みのstatusを処理中に、さらに新しいstatusをfetchする)二重ポーリングに
+  // なってしまうため。即時取得したい呼び出し元は自分で poll() を呼ぶこと。
+  startActivePolling() {
+    this.stopIdlePolling();
+    qs("#reindexBtn").disabled = true;
+    if (this.activePolling) return;
+    this.activePolling = setInterval(() => this.poll(), 2500);
+  },
+
+  stopActivePolling() {
+    if (this.activePolling) {
+      clearInterval(this.activePolling);
+      this.activePolling = null;
+    }
+  },
+
+  startIdlePolling() {
+    if (this.idlePolling) return;
+    this.idlePolling = setInterval(() => this.poll(), 30000);
+  },
+
+  stopIdlePolling() {
+    if (this.idlePolling) {
+      clearInterval(this.idlePolling);
+      this.idlePolling = null;
+    }
+  },
+
+  async poll() {
+    try {
+      const status = await fetchJson("/api/reindex/status");
+      this.applyStatus(status);
+    } catch (e) {
+      console.error(e);
+    }
+  },
+
+  // --- ステータス反映 -----------------------------------------------------
+  applyStatus(status) {
+    if (status.running) {
+      // CLIで実行中のインデクサをアイドルポーリングで検知したケースも含め、
+      // 実行中と分かったらアクティブポーリングに切り替える。
+      this.startActivePolling();
+      this.showRunning(this.normalizeProgress(status.progress));
+      this.lastRunning = true;
+      return;
+    }
+
+    // ここに来るのは非実行中。直前まで実行中を追っていた場合のみ完了処理をする
+    // (アイドルポーリングでたまたま非実行中を見ただけの場合は何もしない)。
+    const wasTracking = this.lastRunning || this.activePolling !== null;
+    this.stopActivePolling();
+    this.startIdlePolling();
+    qs("#reindexBtn").disabled = false;
+    this.lastRunning = false;
+
+    if (!wasTracking) return;
+
+    const p = status.progress || {};
+    // "already_running" は多重起動を防いだだけの内部的な早期リターンであり、
+    // ユーザーに見せるべき失敗ではないため、エラー表示からは除外する。
+    const isBenignAlreadyRunning = status.last_error && String(status.last_error).startsWith("already_running");
+    if (p.phase === "interrupted" || (status.last_error && String(status.last_error).includes("interrupted"))) {
+      this.showFinished("interrupted", this.interruptedDetail(p));
+      toast("インデックス処理が中断されました", true);
+    } else if (status.last_error && !isBenignAlreadyRunning) {
+      this.showFinished("error", `エラー: ${status.last_error}`);
+      toast("更新中にエラーが発生しました: " + status.last_error, true);
+    } else if (isBenignAlreadyRunning) {
+      // 何もしない: 自分が開始しようとしたが既に他プロセスが実行中だっただけ。
+      this.hideBar();
+    } else {
+      this.hideBar();
+      toast("更新が完了しました");
+      // メンバー一覧・現在のタイムラインを再読み込み (新しいデータが入っているため)
+      Sidebar.load().then(() => {
+        if (Sidebar.selectedMember) {
+          return Timeline.loadInitial(Sidebar.selectedMember, null);
+        }
+      }).catch((e) => console.error(e));
+    }
+  },
+
+  // status.progress は2種類の形がありうる:
+  //  - プロセス内 (app.py起動時): {stage, done, total, ...}
+  //  - progress.json由来 (CLI起動時): {phase, done, total, percent, eta_sec, message, ...}
+  // ここで表示用の共通形に正規化する。
+  normalizeProgress(p) {
+    if (!p) return { phase: "scanning", done: null, total: null, percent: null, eta_sec: null, message: null };
+    if (p.phase) {
+      // すでにファイル由来の形式
+      return p;
+    }
+    // stageベース(プロセス内)を phase ベースに変換
+    const stageToPhase = {
+      scanning: "scanning",
+      scanned: "scanning",
+      upserting: "upsert",
+      missing_check: "upsert",
+      thumbnails: "thumbs",
+      thumbnailing: "thumbs",
+    };
+    const phase = stageToPhase[p.stage] || p.stage || "scanning";
+    let message = null;
+    if (p.stage === "scanned") message = `${p.files ?? 0}件のファイル / ${p.messages ?? 0}件のメッセージを検出`;
+    if (p.stage === "missing_check") message = "欠損チェック中...";
+    const done = p.done ?? null;
+    const total = p.total ?? null;
+    const percent = (done !== null && total) ? Math.round((done / total) * 1000) / 10 : null;
+    return { phase, done, total, percent, eta_sec: null, message };
+  },
+
+  // --- 表示 ---------------------------------------------------------------
+  showRunning(p) {
+    const bar = qs("#reindexStatusBar");
+    bar.classList.remove("hidden", "is-error", "is-interrupted");
+
+    const label = PHASE_LABELS[p.phase] || p.phase || "取り込み中";
+    qs("#reindexPhaseLabel").textContent = label;
+
+    let detail = p.message || "";
+    if (p.phase === "upsert" || p.phase === "thumbs") {
+      if (p.total) {
+        detail = `${p.done ?? 0} / ${p.total} 件 (${p.percent != null ? p.percent : "?"}%)`;
+      } else if (p.done !== null && p.done !== undefined) {
+        detail = `${p.done} 件`;
+      }
+    } else if (p.phase === "scanning" && !detail) {
+      detail = "ファイル総数を確認中...";
+    }
+    qs("#reindexDetailText").textContent = detail;
+
+    const etaText = p.eta_sec != null ? formatEta(p.eta_sec) : "";
+    qs("#reindexEtaText").textContent = etaText;
+
+    const track = qs("#reindexProgressTrack");
+    const fill = qs("#reindexProgressFill");
+    if (p.total && p.done !== null && p.done !== undefined) {
+      track.classList.remove("indeterminate");
+      const pct = p.percent != null ? p.percent : Math.min(100, (p.done / p.total) * 100);
+      fill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+    } else {
+      // total不明 (走査中など): 不定形プログレスバー
+      track.classList.add("indeterminate");
+      fill.style.width = "";
+    }
+
+    qs("#reindexBtn").disabled = true;
+  },
+
+  interruptedDetail(p) {
+    const parts = [];
+    if (p.pid) parts.push(`pid=${p.pid} が停止`);
+    if (p.total && p.done !== null && p.done !== undefined) {
+      parts.push(`${p.done} / ${p.total} 件 (${p.percent != null ? p.percent : "?"}%) まで処理済み`);
+    }
+    return parts.join(" / ") || "インデックス処理プロセスが見つかりません";
+  },
+
+  showFinished(kind, text) {
+    // kind: "error" | "interrupted"
+    const bar = qs("#reindexStatusBar");
+    bar.classList.remove("hidden");
+    bar.classList.toggle("is-error", kind === "error");
+    bar.classList.toggle("is-interrupted", kind === "interrupted");
+    qs("#reindexPhaseLabel").textContent = kind === "interrupted" ? "中断されました" : "エラー";
+    qs("#reindexDetailText").textContent = text;
+    qs("#reindexEtaText").textContent = "";
+    const track = qs("#reindexProgressTrack");
+    track.classList.remove("indeterminate");
+    qs("#reindexProgressFill").style.width = "100%";
+    setTimeout(() => this.hideBar(), 8000);
+  },
+
+  hideBar() {
+    const bar = qs("#reindexStatusBar");
+    bar.classList.add("hidden");
+    bar.classList.remove("is-error", "is-interrupted");
+  },
+};
+
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// アプリ本体
+// ---------------------------------------------------------------------------
+const App = {
+  async init() {
+    Theme.init();
+    DisplayPrefs.init();
+    LazyMedia.init();
+    Timeline.init();
+    Search.init();
+    CalendarPanel.init();
+    FavoritesPanel.init();
+    GalleryPanel.init();
+    Settings.init();
+    Reindex.init();
+
+    qs("#lightboxClose").addEventListener("click", closeLightbox);
+    qs("#lightbox").addEventListener("click", (e) => {
+      if (e.target.id === "lightbox") closeLightbox();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        closeLightbox();
+        Search.close();
+        CalendarPanel.close();
+        FavoritesPanel.close();
+        GalleryPanel.close();
+      }
+    });
+
+    await Settings.checkOnStartup();
+    await Sidebar.load();
+  },
+
+  async selectMember(member) {
+    Sidebar.setSelected(member);
+    Search.close();
+    CalendarPanel.close();
+    FavoritesPanel.close();
+    GalleryPanel.close();
+    await Favorites.loadForMember(member);
+    await Timeline.loadInitial(member, null);
+  },
+
+  async jumpToDate(member, dateStr) {
+    try {
+      const data = await fetchJson(`/api/jump?member=${encodeURIComponent(member)}&date=${dateStr}`);
+      if (data.ts == null) {
+        toast("その日付付近にメッセージが見つかりませんでした", true);
+        return;
+      }
+      Sidebar.setSelected(member);
+      if (member !== Favorites._loadedMember) await Favorites.loadForMember(member);
+      await Timeline.loadInitial(member, data.ts);
+    } catch (e) {
+      console.error(e);
+      toast("ジャンプに失敗しました: " + e.message, true);
+    }
+  },
+
+  async jumpToMessage(member, ts) {
+    Sidebar.setSelected(member);
+    if (member !== Favorites._loadedMember) await Favorites.loadForMember(member);
+    await Timeline.loadInitial(member, ts);
+  },
+};
+
+window.addEventListener("DOMContentLoaded", () => App.init());
+</script>
+</body>
+</html>
