@@ -48,6 +48,15 @@ class Config:
         # 残したい（残ってしまう、ではなく意図的に分離している）ため。
         return self.data_dir / "user.db"
 
+    @property
+    def is_dev(self) -> bool:
+        """config-dev.json を使って起動しているか。
+
+        調査用の詳細ログ(スロークエリログ、フロント側のコンソール計測など)を
+        本番運用時には出さず、開発環境でのみ有効にするための判定に使う。
+        """
+        return self.config_path.name == _CONFIG_DEV_FILENAME
+
 
 def _resolve(base: Path, value: str) -> Path:
     p = Path(value)

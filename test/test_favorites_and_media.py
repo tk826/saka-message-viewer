@@ -132,10 +132,9 @@ class TestFavoritesEndpoint:
         # ここではresetの挙動を使ってmessages側の行を消し、favoritesが独立して残ることを確認する)
         # reset自体はuser.dbも削除するため、ここではmessagesテーブルから直接該当行を消す方が
         # 「index.db再構築でfavoritesが孤立するケース」を厳密に再現できる。
-        with app_module._db_lock:
-            conn = app_module.get_conn()
-            conn.execute("DELETE FROM messages WHERE member=? AND msg_id=?", ("member_a", 1))
-            conn.commit()
+        conn = app_module.get_conn()
+        conn.execute("DELETE FROM messages WHERE member=? AND msg_id=?", ("member_a", 1))
+        conn.commit()
 
         listed = client.get("/api/favorites").json()
         assert listed["favorites"] == []
@@ -197,13 +196,12 @@ class TestMediaPathEndpoint:
     def test_media_path_root_not_configured_returns_409(self, client, app_module):
         # root未設定だがmessagesにmedia付き行があるという不自然な状態を直接作り、
         # root未設定時の分岐(409)を検証する。
-        with app_module._db_lock:
-            conn = app_module.get_conn()
-            conn.execute(
-                """INSERT INTO messages (member, group_, msg_id, ts, ts_raw, body, media, kind, flag, thumb, missing)
-                   VALUES ('member_x', NULL, 1, 0, '20260101000000', NULL, 'member_x/2026/202601/1_1_20260101000000.jpg', 'image', 1, NULL, 0)"""
-            )
-            conn.commit()
+        conn = app_module.get_conn()
+        conn.execute(
+            """INSERT INTO messages (member, group_, msg_id, ts, ts_raw, body, media, kind, flag, thumb, missing)
+               VALUES ('member_x', NULL, 1, 0, '20260101000000', NULL, 'member_x/2026/202601/1_1_20260101000000.jpg', 'image', 1, NULL, 0)"""
+        )
+        conn.commit()
 
         res = client.get("/api/media-path", params={"member": "member_x", "msg_id": 1})
         assert res.status_code == 409
@@ -234,10 +232,9 @@ class TestMediaListEndpoint:
         assert kinds == {"image", "video"}  # text は除外される
 
         # missing=1の行はギャラリーから除外される
-        with app_module._db_lock:
-            conn = app_module.get_conn()
-            conn.execute("UPDATE messages SET missing=1 WHERE member='member_a' AND msg_id=1")
-            conn.commit()
+        conn = app_module.get_conn()
+        conn.execute("UPDATE messages SET missing=1 WHERE member='member_a' AND msg_id=1")
+        conn.commit()
 
         res_after_missing = client.get("/api/media-list", params={"member": "member_a", "kind": "image"})
         assert res_after_missing.json()["items"] == []

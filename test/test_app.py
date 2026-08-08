@@ -12,7 +12,7 @@ class TestSettingsEndpoint:
     def test_get_settings_initially_unconfigured(self, client):
         res = client.get("/api/settings")
         assert res.status_code == 200
-        assert res.json() == {"root": None, "configured": False}
+        assert res.json() == {"root": None, "configured": False, "is_dev": False}
 
     def test_post_settings_empty_root_rejected(self, client):
         res = client.post("/api/settings", json={"root": ""})

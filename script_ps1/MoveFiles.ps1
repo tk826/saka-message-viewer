@@ -16,6 +16,9 @@ if (-not (Test-Path -LiteralPath $TargetDir)) {
     exit 1
 }
 
+# 相対パス表示の基準にするため、対象ディレクトリを絶対パスに正規化
+$TargetDir = (Resolve-Path -LiteralPath $TargetDir).Path
+
 Write-Host "対象ディレクトリ: $TargetDir"
 Write-Host "移動処理を開始します..."
 Write-Host ""
@@ -67,7 +70,10 @@ foreach ($file in $targetFiles) {
             $skipCount++
         } else {
             Move-Item -LiteralPath $file.FullName -Destination $destPath
-            Write-Host "[移動] $($file.Name) -> $yyyy\$yyyymm\" -ForegroundColor Green
+
+            # 対象ディレクトリを起点にした相対パスでログ表示する
+            $relativeDestDir = $destDir.Substring($TargetDir.Length).TrimStart('\')
+            Write-Host "[移動] $($file.Name) -> $relativeDestDir\" -ForegroundColor Green
             $successCount++
         }
     }

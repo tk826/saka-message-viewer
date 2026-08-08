@@ -19,6 +19,9 @@ __pycache__/
 # 個人環境用設定(config.jsonを上書きするローカル専用設定、rootなど個人情報を含む)
 config-dev.json
 
+# 個人用メモ
+GIT.md
+
 # 動画サムネイル生成用の同梱ffmpeg(任意・サイズが大きいためコミットしない)
 # bin/ffmpeg(.exe) またはプロジェクト直下に置くと自動認識される(indexer.pyのfind_ffmpeg参照)
 /bin/

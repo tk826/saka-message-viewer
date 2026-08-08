@@ -42,12 +42,10 @@ def make_cfg(tmp_path: Path, root: Path, incremental_months: int = 2):
 
 class TestParseTsJst:
     def test_known_datetime_converts_to_expected_epoch(self):
-        # 2024-01-15 12:00:00 JST == 2024-01-15 03:00:00 UTC
+        # ファイル名の日時はUTCとして解釈する
         ts = parse_ts_jst("20240115120000")
-        expected = datetime(2024, 1, 15, 3, 0, 0).timestamp()
-        # timestamp()はローカルタイムゾーン依存になりうるため、UTC epochで比較する
         import calendar
-        expected_utc = calendar.timegm((2024, 1, 15, 3, 0, 0, 0, 0, 0))
+        expected_utc = calendar.timegm((2024, 1, 15, 12, 0, 0, 0, 0, 0))
         assert ts == expected_utc
 
 

@@ -522,9 +522,16 @@ body {
   background: rgba(0,0,0,0.06);
   min-height: 60px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: center;
   position: relative;
+}
+
+/* video/audioの音量ブースト行は常に自身の行いっぱいに幅をとり、
+   video/imgの隣に並ばず必ず下の行に折り返される。 */
+.msg-media .volume-boost-row {
+  flex-basis: 100%;
 }
 
 .msg-media img.thumb-img {
@@ -580,6 +587,50 @@ body {
   padding: 2px 6px;
   border-radius: 8px;
   pointer-events: none;
+}
+
+.volume-boost-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 8px;
+  box-sizing: border-box;
+  background: rgba(0,0,0,0.06);
+}
+
+/* 設定「動画・音声に音量ブースターを表示する」がOFFの場合、
+   全メッセージの音量ブースト行を一括で隠す。 */
+body.volume-boost-disabled .volume-boost-row {
+  display: none;
+}
+
+.volume-boost-label {
+  font-size: 0.6875rem;
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.volume-boost-slider {
+  flex: 1;
+  min-width: 0;
+}
+
+.volume-boost-value {
+  font-size: 0.6875rem;
+  color: var(--text-faint);
+  flex-shrink: 0;
+  min-width: 3em;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.volume-boost-row--disabled {
+  opacity: 0.5;
+}
+
+.volume-boost-row--disabled .volume-boost-slider {
+  cursor: not-allowed;
 }
 
 .missing-media {
@@ -1064,6 +1115,40 @@ body {
   margin-top: 14px;
 }
 
+.settings-section {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--panel-border);
+}
+
+.settings-section:first-of-type {
+  margin-top: 12px;
+  padding-top: 0;
+  border-top: none;
+}
+
+.settings-section-title {
+  margin: 0 0 10px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-sub);
+  letter-spacing: 0.02em;
+}
+
+.settings-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--text-sub);
+  cursor: pointer;
+}
+
+.settings-checkbox-label input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+}
+
 .settings-tabs {
   display: flex;
   gap: 2px;
@@ -1276,26 +1361,44 @@ body {
 
         <div id="settingsTabDisplay" class="settings-tab-panel hidden">
           <p class="settings-desc">表示設定（この端末のブラウザに保存されます）</p>
-          <label for="settingsNickname" class="settings-label">ニックネーム（本文中の %%% と置換されます）</label>
-          <input type="text" id="settingsNickname" placeholder="ユーザー">
 
-          <label for="settingsTheme" class="settings-label settings-label-spaced">テーマ</label>
-          <select id="settingsTheme">
-            <option value="">システム設定に従う</option>
-            <option value="light">ライト</option>
-            <option value="dark">ダーク</option>
-          </select>
+          <section class="settings-section">
+            <h3 class="settings-section-title">テーマ・文字</h3>
 
-          <label for="settingsFontFamily" class="settings-label settings-label-spaced">フォント</label>
-          <select id="settingsFontFamily">
-            <option value="">既定（ゴシック体）</option>
-            <option value="serif">明朝体</option>
-            <option value="'UD Digital KyoKasho', 'BIZ UDGothic', sans-serif">UDフォント（読みやすさ重視）</option>
-            <option value="monospace">等幅</option>
-          </select>
+            <label for="settingsTheme" class="settings-label">テーマ</label>
+            <select id="settingsTheme">
+              <option value="">システム設定に従う</option>
+              <option value="light">ライト</option>
+              <option value="dark">ダーク</option>
+            </select>
 
-          <label for="settingsFontSize" class="settings-label settings-label-spaced">文字サイズ: <span id="settingsFontSizeValue">100%</span></label>
-          <input type="range" id="settingsFontSize" min="80" max="160" step="10" value="100">
+            <label for="settingsFontFamily" class="settings-label settings-label-spaced">フォント</label>
+            <select id="settingsFontFamily">
+              <option value="">既定（ゴシック体）</option>
+              <option value="serif">明朝体</option>
+              <option value="'UD Digital KyoKasho', 'BIZ UDGothic', sans-serif">UDフォント（読みやすさ重視）</option>
+              <option value="monospace">等幅</option>
+            </select>
+
+            <label for="settingsFontSize" class="settings-label settings-label-spaced">文字サイズ: <span id="settingsFontSizeValue">100%</span></label>
+            <input type="range" id="settingsFontSize" min="80" max="160" step="10" value="100">
+          </section>
+
+          <section class="settings-section">
+            <h3 class="settings-section-title">メッセージ表示</h3>
+
+            <label for="settingsNickname" class="settings-label">ニックネーム（本文中の %%% または ％％％ と置換されます）</label>
+            <input type="text" id="settingsNickname" placeholder="ユーザー">
+          </section>
+
+          <section class="settings-section">
+            <h3 class="settings-section-title">動画・音声</h3>
+
+            <label class="settings-checkbox-label">
+              <input type="checkbox" id="settingsVolumeBoost" checked>
+              音量ブースター（最大200%）を表示する
+            </label>
+          </section>
         </div>
 
         <div id="settingsTabDanger" class="settings-tab-panel hidden">
@@ -1338,7 +1441,7 @@ function escapeHtml(s) {
 function applyNicknamePlaceholder(s) {
   if (s == null) return s;
   const nickname = DisplayPrefs.load().nickname;
-  return s.replaceAll("%%%", nickname);
+  return s.replaceAll("%%%", nickname).replaceAll("％％％", nickname);
 }
 
 function jstDateParts(ts) {
@@ -1379,8 +1482,33 @@ function toast(msg, isError) {
   toast._t = setTimeout(() => el.classList.add("hidden"), 3500);
 }
 
+// 調査用コンソールログ(Sidebar.loadの所要時間計測等)の出力可否。
+// /api/settings のレスポンス(is_dev, config-dev.json使用時のみtrue)を
+// Settings.checkOnStartup() が受け取ってここに反映する。
+// App.init() は checkOnStartup() の完了を待ってから他の初期化を行うため、
+// それ以降のコードからはこの値を参照できる。
+let isDevMode = false;
+
+// サーバ側のSQLite busy_timeout(30秒)に合わせた既定タイムアウト。
+// 取り込み中に読み取りリクエストがロック待ちで詰まった場合、fetch自体は
+// ブラウザ側では無期限に待ち続けてしまう(=画面が「読み込み中...」のまま
+// 固まって見える)ため、ここで打ち切ってユーザーに状況を伝えられるようにする。
+const FETCH_TIMEOUT_MS = 35000;
+
 async function fetchJson(url, opts) {
-  const res = await fetch(url, opts);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  let res;
+  try {
+    res = await fetch(url, { ...opts, signal: controller.signal });
+  } catch (e) {
+    if (e.name === "AbortError") {
+      throw new Error("サーバの応答がありません(タイムアウト)。取り込み処理が重い可能性があります。");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timeoutId);
+  }
   if (!res.ok) {
     let detail = "";
     try {
@@ -1419,6 +1547,67 @@ const Theme = {
       document.documentElement.removeAttribute("data-theme");
       localStorage.removeItem(this.KEY);
     }
+  },
+};
+
+// ---------------------------------------------------------------------------
+// 音量ブースト (Web Audio API)
+//
+// <video>/<audio>のネイティブcontrolsの音量は0〜100%までしか上げられない
+// (ブラウザの仕様上の上限)。100%を超えて増幅するにはWeb Audio APIで
+// MediaElementAudioSourceNode -> GainNode -> destination という処理グラフを
+// 組み、GainNodeのgain値で信号自体を増幅する必要がある。
+// createMediaElementSourceは同一要素に対して一度しか呼べない(2回目は例外に
+// なる)ため、要素ごとにノードをキャッシュして使い回す。
+// また、その要素の音声出力は以後このグラフ経由のみになる(GainNode接続前は
+// 無音)ため、接続と同時にdestinationまで繋ぐ。
+// AudioContextはユーザー操作なしで自動再生ポリシーによりsuspendされたまま
+// になることがあるため、スライダー操作時にresume()する。
+// ---------------------------------------------------------------------------
+const VolumeBoost = {
+  MAX_GAIN: 2.0, // 200%
+  _ctx: null,
+  _nodes: new WeakMap(), // mediaEl -> { source, gain }
+
+  _getContext() {
+    if (!this._ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      this._ctx = new AC();
+    }
+    return this._ctx;
+  },
+
+  _getGainNode(mediaEl) {
+    let entry = this._nodes.get(mediaEl);
+    if (!entry) {
+      const ctx = this._getContext();
+      const source = ctx.createMediaElementSource(mediaEl);
+      const gain = ctx.createGain();
+      source.connect(gain);
+      gain.connect(ctx.destination);
+      entry = { source, gain };
+      this._nodes.set(mediaEl, entry);
+    }
+    return entry.gain;
+  },
+
+  // pct: 0〜200 (%)。100%まではブラウザ標準のvideo.volumeで賄い、
+  // GainNodeのgainは常に1.0以下に保つ(念のためAudioContext側では増幅しない
+  // 経路も許容し、100%以下の操作でWeb Audio APIの初期化自体を避ける)。
+  // 100%を超えた分だけGainNodeで増幅する。
+  apply(mediaEl, pct) {
+    const clamped = Math.max(0, Math.min(200, pct));
+    if (clamped <= 100) {
+      mediaEl.volume = clamped / 100;
+      const entry = this._nodes.get(mediaEl);
+      if (entry) entry.gain.gain.value = 1.0;
+      return;
+    }
+    mediaEl.volume = 1.0;
+    const ctx = this._getContext();
+    if (ctx.state === "suspended") ctx.resume().catch(() => {});
+    const gainNode = this._getGainNode(mediaEl);
+    gainNode.gain.value = clamped / 100;
   },
 };
 
@@ -1511,6 +1700,88 @@ const Favorites = {
 // ---------------------------------------------------------------------------
 // メッセージ描画
 // ---------------------------------------------------------------------------
+
+// mediaElに音声トラックがあるかを判定する。
+// HTMLMediaElement標準には「音声トラックの有無」を直接返すプロパティが
+// 無く、ブラウザ実装依存のAPIを試すしかない:
+//   - webkitAudioDecodedByteCount (Chrome/Safari系): デコード済み音声バイト数。
+//     音声トラックが無ければ再生が進んでも常に0のまま。
+//   - mozHasAudio (Firefox)
+//   - audioTracks (実装されていれば長さで判定、非対応ブラウザではundefined)
+// いずれも読み込み前(readyState不足)は未確定なため、判定できない場合は
+// nullを返し、呼び出し側は「わかるまでは活性のまま」にする
+// (誤って音声ありの動画を非活性にしてしまう方が実害が大きいため)。
+function detectHasAudio(mediaEl) {
+  if (typeof mediaEl.audioTracks !== "undefined") {
+    return mediaEl.audioTracks.length > 0;
+  }
+  if (typeof mediaEl.webkitAudioDecodedByteCount !== "undefined") {
+    if (mediaEl.webkitAudioDecodedByteCount > 0) return true;
+    // 0はまだデコードが進んでいないだけの可能性があるため、readyState を見て
+    // ある程度再生データが読めている場合のみ「音声なし」と確定させる。
+    if (mediaEl.readyState >= 2) return false; // HAVE_CURRENT_DATA以上
+    return null;
+  }
+  if (typeof mediaEl.mozHasAudio !== "undefined") {
+    return mediaEl.mozHasAudio;
+  }
+  return null;
+}
+
+// 動画/音声要素に付随する音量ブースト(0〜200%)スライダーを組み立てる。
+// ネイティブcontrolsの音量(0〜100%)とは別に、100%超はVolumeBoost経由の
+// GainNodeで増幅する。要素クリック時のイベント伝播でプレイヤー操作と
+// 干渉しないよう、スライダー自体はcontrols領域の外(wrap内の別行)に置く。
+// 音声トラックの無い動画(無音動画)ではスライダーを非活性にする。
+function buildVolumeBoostControl(mediaEl) {
+  const row = ce("div", "volume-boost-row");
+
+  const label = ce("span", "volume-boost-label");
+  label.textContent = "音量";
+  row.appendChild(label);
+
+  const slider = ce("input", "volume-boost-slider");
+  slider.type = "range";
+  slider.min = "0";
+  slider.max = "200";
+  slider.step = "5";
+  slider.value = "100";
+  row.appendChild(slider);
+
+  const valueEl = ce("span", "volume-boost-value");
+  valueEl.textContent = "100%";
+  row.appendChild(valueEl);
+
+  const applyFromSlider = () => {
+    const pct = Number(slider.value);
+    valueEl.textContent = `${pct}%`;
+    VolumeBoost.apply(mediaEl, pct);
+  };
+  // input: ドラッグ中も随時反映。mousedown等のクリックがプレイヤーの
+  // 再生/一時停止トグルに伝播しないよう、スライダー操作はここで完結させる。
+  slider.addEventListener("input", applyFromSlider);
+  slider.addEventListener("click", (e) => e.stopPropagation());
+
+  // 音声トラックの有無はメタデータ/再生データが読み込まれるまで判定できない
+  // ため、loadedmetadataとloadeddataの両方で判定を試み、結果が確定した
+  // (true/falseのどちらかになった)時点で両方のリスナーを外す。
+  const tryDetect = () => {
+    const hasAudio = detectHasAudio(mediaEl);
+    if (hasAudio === null) return;
+    if (hasAudio === false) {
+      slider.disabled = true;
+      valueEl.textContent = "音声なし";
+      row.classList.add("volume-boost-row--disabled");
+    }
+    mediaEl.removeEventListener("loadedmetadata", tryDetect);
+    mediaEl.removeEventListener("loadeddata", tryDetect);
+  };
+  mediaEl.addEventListener("loadedmetadata", tryDetect);
+  mediaEl.addEventListener("loadeddata", tryDetect);
+
+  return row;
+}
+
 function buildMediaEl(msg) {
   const wrap = ce("div", "msg-media");
 
@@ -1542,6 +1813,16 @@ function buildMediaEl(msg) {
     const video = ce("video");
     video.controls = true;
     video.preload = "none";
+    if (msg.thumb_url) {
+      video.poster = msg.thumb_url;
+      // video要素自体はposter画像の読み込み完了を通知するイベントを
+      // 持たないため、同じURLをImageでプリロードしてloadを検知する。
+      // 末尾表示中にposter読み込みでレイアウトシフトが起きても
+      // 最下部に追従できるようにする(scrollToMsgId側の同様の補正と対)。
+      const preloadImg = new Image();
+      preloadImg.addEventListener("load", () => Timeline.stickToBottomIfNeeded(), { once: true });
+      preloadImg.src = msg.thumb_url;
+    }
     if (msg.media_url) {
       video.setAttribute("data-src", msg.media_url);
       video.setAttribute("data-type", "video/mp4");
@@ -1553,6 +1834,7 @@ function buildMediaEl(msg) {
     // プレイヤーの操作を邪魔しないよう、再生開始で非表示にする
     video.addEventListener("play", () => badge.remove());
     wrap.appendChild(badge);
+    wrap.appendChild(buildVolumeBoostControl(video));
     return wrap;
   }
 
@@ -1570,6 +1852,7 @@ function buildMediaEl(msg) {
     const tag = ce("div", "audio-tag");
     tag.innerHTML = "&#127925; 音声";
     wrap.appendChild(tag);
+    wrap.appendChild(buildVolumeBoostControl(video));
     return wrap;
   }
 
@@ -1743,6 +2026,22 @@ const Timeline = {
     this.el = qs("#timeline");
     this.el.addEventListener("scroll", () => this.onScroll(), { passive: true });
     qs("#scrollBottomBtn").addEventListener("click", () => this.scrollToBottomAndResync());
+    // 画像/動画poster等、個別のloadイベントを待つ経路(stickToBottomIfNeeded
+    // の各呼び出し箇所)だけでは、IntersectionObserverの初回発火タイミングが
+    // 遅れるケース等で取りこぼしうる(初回表示時のみ最下部までスクロール
+    // されないことがあった)。保険として#timelineの最後の子要素(末尾行)の
+    // サイズ変化を監視し、確実に追従する
+    // (_updateBottomResizeObserverでappendBatch時に監視対象を切り替える)。
+    this._bottomRo = new ResizeObserver(() => this.stickToBottomIfNeeded());
+  },
+
+  // #timelineの最後の子要素(末尾行)を監視対象に切り替える。appendBatchで
+  // 末尾に新しい行を足すたびに呼ぶことで、直近の末尾行のサイズ変化
+  // (画像/動画読み込みによる高さ確定)を検知して最下部への追従に使う。
+  _updateBottomResizeObserver() {
+    this._bottomRo.disconnect();
+    const last = this.el.lastElementChild;
+    if (last) this._bottomRo.observe(last);
   },
 
   // フローティング日付見出し(#stickyDateSep)の更新。
@@ -1826,6 +2125,7 @@ const Timeline = {
     this.el.innerHTML = "";
     this._globalLastDateKey = null;
     this._stickToBottom = false;
+    this._bottomRo.disconnect();
     qs("#emptyState").classList.add("hidden");
     this.el.classList.remove("hidden");
     qs("#stickyDateSep").classList.add("hidden");
@@ -1837,7 +2137,11 @@ const Timeline = {
     this.el.scrollTop = this.el.scrollHeight;
   },
 
-  async loadInitial(member, jumpTs) {
+  // jumpMsgId: ジャンプ先を一意に特定するmsg_id(あれば優先して使う)。
+  // tsは「同じ秒」に複数メッセージが存在すると重複しうるため、ts一致だけで
+  // ジャンプ先を探すと別のメッセージにマッチすることがある
+  // (呼び出し元がmsg_idを持たない場合=カレンダーからのジャンプ等のみnull)。
+  async loadInitial(member, jumpTs, jumpMsgId = null) {
     this.reset(member);
     this.el.innerHTML = `<div class="load-sentinel">読み込み中...</div>`;
     try {
@@ -1870,10 +2174,25 @@ const Timeline = {
         } else {
           this.hasMoreNewer = false;
         }
-        // ジャンプ先の行までスクロール(before=jumpTs+1 で取得したバッチの末尾が jumpTs のメッセージ)
-        const jumpMsg = msgs.find((m) => m.ts === jumpTs) || msgs[msgs.length - 1];
-        const jumpMsgId = jumpMsg.msg_id;
-        requestAnimationFrame(() => this.scrollToMsgId(jumpMsgId));
+        // ジャンプ先の行までスクロール。msg_idが分かっていればそれで一意に
+        // 特定する(before=jumpTs+1で取得したバッチの末尾がjumpTsのメッセージ
+        // だが、同じ秒に複数メッセージがある場合はts一致だけでは別の
+        // メッセージにマッチしうるため)。
+        const byId = jumpMsgId != null ? msgs.find((m) => m.msg_id === jumpMsgId) : null;
+        const byTs = !byId ? msgs.find((m) => m.ts === jumpTs) : null;
+        const jumpMsg = byId || byTs || msgs[msgs.length - 1];
+        if (isDevMode) {
+          console.info("[Timeline.loadInitial] jump debug", {
+            requestedJumpTs: jumpTs,
+            requestedJumpMsgId: jumpMsgId,
+            matchedBy: byId ? "msg_id" : (byTs ? "ts" : "fallback-last"),
+            resolvedMsgId: jumpMsg.msg_id,
+            resolvedTs: jumpMsg.ts,
+            msgsCount: msgs.length,
+            msgsTsRange: [msgs[0]?.ts, msgs[msgs.length - 1]?.ts],
+          });
+        }
+        requestAnimationFrame(() => this.scrollToMsgId(jumpMsg.msg_id));
       } else {
         this.hasMoreNewer = false; // 最新から読んでいるので「新しい方向」はもうない
         this._stickToBottom = true;
@@ -1888,16 +2207,41 @@ const Timeline = {
 
   scrollToMsgId(msgId) {
     const row = this.el.querySelector(`.msg-row[data-msg-id="${CSS.escape(String(msgId))}"]`);
-    if (row) {
-      row.scrollIntoView({ block: "center" });
-      const bubble = row.querySelector(".msg-bubble");
-      if (bubble) {
-        bubble.style.transition = "box-shadow 0.6s";
-        const orig = bubble.style.boxShadow;
-        bubble.style.boxShadow = "0 0 0 2px var(--selected-border)";
-        setTimeout(() => { bubble.style.boxShadow = orig; }, 1200);
-      }
+    if (!row) return;
+    row.scrollIntoView({ block: "center" });
+    const bubble = row.querySelector(".msg-bubble");
+    if (bubble) {
+      bubble.style.transition = "box-shadow 0.6s";
+      const orig = bubble.style.boxShadow;
+      bubble.style.boxShadow = "0 0 0 2px var(--selected-border)";
+      setTimeout(() => { bubble.style.boxShadow = orig; }, 1200);
     }
+    // 画像サムネやvideoのposter画像は非同期で読み込まれるため、
+    // scrollIntoView実行時点ではまだ高さが確定しておらず、その後の
+    // 読み込み完了でレイアウトシフトが起き、対象行が画面外に押し出される
+    // ことがある。読み込み完了(またはタイムアウト)を待って再度centerへ
+    // スクロールし直すことで、この分の位置ズレを補正する。
+    const resync = () => row.scrollIntoView({ block: "center" });
+    const img = row.querySelector("img");
+    if (img && !img.complete) {
+      img.addEventListener("load", resync, { once: true });
+    }
+    const video = row.querySelector("video");
+    if (video) {
+      const posterUrl = video.getAttribute("poster");
+      if (posterUrl) {
+        // video要素自体はposter画像の読み込み完了を通知するイベントを
+        // 持たないため、同じURLをImageでプリロードしてloadを検知する。
+        const preloadImg = new Image();
+        preloadImg.addEventListener("load", resync, { once: true });
+        preloadImg.src = posterUrl;
+      }
+      // preload="none"のためLazyMediaが実データを読み込むまでmetadataも
+      // 取得できない。画面内に入って読み込みが進んだ場合の保険。
+      video.addEventListener("loadedmetadata", resync, { once: true });
+    }
+    // 上記いずれのイベントも発火しなかった場合の最終保険。
+    setTimeout(resync, 300);
   },
 
   // batch: 昇順(古い→新しい)の配列を想定
@@ -1913,6 +2257,7 @@ const Timeline = {
     }
     if (where === "bottom") {
       this.el.appendChild(frag);
+      this._updateBottomResizeObserver();
     } else {
       this.el.insertBefore(frag, this.el.firstChild);
     }
@@ -2006,6 +2351,19 @@ const Timeline = {
     } finally {
       this.loadingNewer = false;
     }
+  },
+
+  // 取り込み中の自動追従用: ユーザーが末尾付近を見ていて、かつ既に最新まで
+  // 読み込み済み(hasMoreNewer=false)の場合だけ新着メッセージを取り込む。
+  // 過去ログを閲覧中(末尾から離れている)のユーザーの位置を勝手に動かさないため、
+  // 条件を満たさない場合は何もしない(通常のloadNewerページングと競合しないよう
+  // loadingNewer中もスキップする)。
+  async refreshIfAtBottom() {
+    if (!this.member || !this._stickToBottom || this.hasMoreNewer || this.loadingNewer) return;
+    const rows = this.el.querySelectorAll(".msg-row");
+    if (rows.length === 0) return;
+    await this.loadNewer();
+    requestAnimationFrame(() => { this.el.scrollTop = this.el.scrollHeight; });
   },
 
   _dedupeDateSeps() {
@@ -2104,19 +2462,51 @@ const Sidebar = {
   threads: [],
   selectedMember: null,
 
-  async load() {
-    qs("#memberListLoading").classList.remove("hidden");
+  async load({ silent = false } = {}) {
+    if (!silent) qs("#memberListLoading").classList.remove("hidden");
+    // 調査用: /api/threads の所要時間をコンソールで確認できるようにする
+    // (取り込み中はSQLiteロック待ち等で遅くなりうるため)。
+    const _t0 = performance.now();
     try {
       const data = await fetchJson("/api/threads");
-      this.threads = data || [];
+      const _elapsed = performance.now() - _t0;
+      if (isDevMode && _elapsed > 1000) {
+        console.warn(`[Sidebar.load] /api/threads took ${Math.round(_elapsed)}ms (silent=${silent})`);
+      }
+      const next = data || [];
+      // silent時(取り込み中のバックグラウンドポーリング)は、内容が前回と同じなら
+      // render()を呼ばない。renderは一覧DOMを丸ごと作り直すため、変化が無いのに
+      // 毎回呼ぶとちらつきやスクロール位置のリセットにつながるため。
+      if (silent && this._sameThreads(next)) {
+        if (isDevMode) {
+          console.debug(`[Sidebar.load] silent poll: server returned ${next.length} threads (unchanged)`);
+        }
+        return;
+      }
+      if (silent && isDevMode) {
+        console.info(`[Sidebar.load] silent poll: threads ${this.threads.length} -> ${next.length}`);
+      }
+      this.threads = next;
       this.render();
     } catch (e) {
       console.error(e);
+      if (silent) return; // バックグラウンド更新の失敗は静かに無視する
       qs("#memberListLoading").textContent = "読み込みに失敗しました";
       toast("メンバー一覧の取得に失敗しました: " + e.message, true);
       return;
     }
-    qs("#memberListLoading").classList.add("hidden");
+    if (!silent) qs("#memberListLoading").classList.add("hidden");
+  },
+
+  _sameThreads(next) {
+    if (next.length !== this.threads.length) return false;
+    for (let i = 0; i < next.length; i++) {
+      const a = this.threads[i], b = next[i];
+      if (a.member !== b.member || a.group !== b.group || a.count !== b.count || a.last_ts !== b.last_ts) {
+        return false;
+      }
+    }
+    return true;
   },
 
   render() {
@@ -2274,7 +2664,7 @@ const Search = {
     item.appendChild(snippet);
     item.addEventListener("click", () => {
       this.close();
-      App.jumpToMessage(r.member, r.ts);
+      App.jumpToMessage(r.member, r.ts, r.msg_id);
     });
     return item;
   },
@@ -2572,7 +2962,7 @@ const FavoritesPanel = {
 
     item.addEventListener("click", () => {
       this.close();
-      App.jumpToMessage(f.member, f.ts);
+      App.jumpToMessage(f.member, f.ts, f.msg_id);
     });
 
     return item;
@@ -2728,7 +3118,7 @@ const GalleryPanel = {
     jumpBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       this.close();
-      App.jumpToMessage(msg.member, msg.ts);
+      App.jumpToMessage(msg.member, msg.ts, msg.msg_id);
     });
     media.appendChild(jumpBtn);
 
@@ -2752,8 +3142,11 @@ const GalleryPanel = {
       if (msg.kind === "image") {
         openLightbox(msg);
       } else {
+        if (isDevMode) {
+          console.info("[GalleryPanel] clicked item", { msg_id: msg.msg_id, ts: msg.ts, kind: msg.kind, member: msg.member });
+        }
         this.close();
-        App.jumpToMessage(msg.member, msg.ts);
+        App.jumpToMessage(msg.member, msg.ts, msg.msg_id);
       }
     });
 
@@ -2770,7 +3163,12 @@ const DisplayPrefs = {
   DEFAULT_NICKNAME: "ユーザー",
 
   load() {
-    let prefs = { fontFamily: "", fontSize: this.DEFAULT_FONT_SIZE, nickname: this.DEFAULT_NICKNAME };
+    let prefs = {
+      fontFamily: "",
+      fontSize: this.DEFAULT_FONT_SIZE,
+      nickname: this.DEFAULT_NICKNAME,
+      volumeBoostEnabled: true,
+    };
     try {
       const raw = localStorage.getItem(this.STORAGE_KEY);
       if (raw) prefs = { ...prefs, ...JSON.parse(raw) };
@@ -2797,6 +3195,10 @@ const DisplayPrefs = {
       root.style.removeProperty("--font-family");
     }
     root.style.fontSize = `${prefs.fontSize}%`;
+    // 既に描画済みの音量ブースト行にも即座に反映する
+    // (buildVolumeBoostControl側は生成時にこのフラグを見るが、設定変更時は
+    // タイムライン全体を作り直すコストをかけずCSSのhiddenだけ切り替える)。
+    document.body.classList.toggle("volume-boost-disabled", !prefs.volumeBoostEnabled);
   },
 
   init() {
@@ -2807,11 +3209,13 @@ const DisplayPrefs = {
     const familySelect = qs("#settingsFontFamily");
     const sizeInput = qs("#settingsFontSize");
     const sizeValue = qs("#settingsFontSizeValue");
+    const volumeBoostCheckbox = qs("#settingsVolumeBoost");
 
     nicknameInput.value = prefs.nickname;
     familySelect.value = prefs.fontFamily || "";
     sizeInput.value = prefs.fontSize;
     sizeValue.textContent = `${prefs.fontSize}%`;
+    volumeBoostCheckbox.checked = prefs.volumeBoostEnabled;
 
     nicknameInput.addEventListener("input", () => {
       const current = this.load();
@@ -2823,6 +3227,13 @@ const DisplayPrefs = {
     familySelect.addEventListener("change", () => {
       const current = this.load();
       current.fontFamily = familySelect.value;
+      this.save(current);
+      this.apply(current);
+    });
+
+    volumeBoostCheckbox.addEventListener("change", () => {
+      const current = this.load();
+      current.volumeBoostEnabled = volumeBoostCheckbox.checked;
       this.save(current);
       this.apply(current);
     });
@@ -2870,6 +3281,7 @@ const Settings = {
     try {
       const data = await fetchJson("/api/settings");
       this.configured = !!data.configured;
+      isDevMode = !!data.is_dev;
       if (data.root) qs("#settingsRootInput").value = data.root;
       if (!this.configured) {
         this.open(true);
@@ -3093,6 +3505,14 @@ const Reindex = {
       this.startActivePolling();
       this.showRunning(this.normalizeProgress(status.progress));
       this.lastRunning = true;
+      // 取り込み中でも、ユーザーが最新メッセージ位置を見ている場合は
+      // 随時反映する(indexer側がこまめにcommit+checkpointするようになったため、
+      // 完了を待たずに新着が読めるようになった分、体感速度を上げる)。
+      Timeline.refreshIfAtBottom().catch((e) => console.error(e));
+      // 取り込み中は継続してサイドバーも更新する(新規メンバーの追加・件数の
+      // 増加を随時反映するため)。silent指定により、内容に変化が無ければ
+      // render()自体はスキップされるのでちらつきは起きない。
+      Sidebar.load({ silent: true }).catch((e) => console.error(e));
       return;
     }
 
@@ -3291,10 +3711,10 @@ const App = {
     }
   },
 
-  async jumpToMessage(member, ts) {
+  async jumpToMessage(member, ts, msgId = null) {
     Sidebar.setSelected(member);
     if (member !== Favorites._loadedMember) await Favorites.loadForMember(member);
-    await Timeline.loadInitial(member, ts);
+    await Timeline.loadInitial(member, ts, msgId);
   },
 };
 

@@ -44,20 +44,34 @@ if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
 }
 
 # --- ログ出力の準備 -------------------------------------------------
-# Tee-Object -FilePath はログファイルを排他的に開き続けるため、ロック中は
-# 使えない。事前に書き込みテストを行い、失敗したらログ無しモードで起動する。
+# Add-Content/Tee-Object の -Encoding UTF8 は Windows PowerShell 5.1 では
+# BOM付きUTF-8固定になり、かつ Tee-Object 経由だと2バイト単位の空白が
+# 混入する文字化けが起きるため、.NET の StreamWriter (BOMなしUTF-8) に
+# 直接書き込む。ログファイルを排他的に開き続けるため、ロック中は使えない。
+# 事前に書き込みテストを行い、失敗したらログ無しモードで起動する。
 $logPath = '.\data\server_log.txt'
 $separator = "========== $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') 起動 =========="
 $logAvailable = $true
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 try {
-    Add-Content -Path $logPath -Value $separator -Encoding UTF8 -ErrorAction Stop
+    $writer = New-Object System.IO.StreamWriter($logPath, $true, $utf8NoBom)
+    $writer.WriteLine($separator)
 } catch {
     $logAvailable = $false
     Write-Output "警告: ログファイル ($logPath) に書き込めなかったため、ログ無しで起動します。"
 }
 
 if ($logAvailable) {
-    & '.\venv_win\Scripts\python.exe' app.py 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $logPath -Append
+    try {
+        & '.\venv_win\Scripts\python.exe' app.py 2>&1 | ForEach-Object {
+            $line = "$_"
+            Write-Output $line
+            $writer.WriteLine($line)
+            $writer.Flush()
+        }
+    } finally {
+        $writer.Close()
+    }
 } else {
     & '.\venv_win\Scripts\python.exe' app.py 2>&1 | ForEach-Object { "$_" }
 }

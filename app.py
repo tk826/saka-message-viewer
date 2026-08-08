@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import re
 import sqlite3
+import sys
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -25,29 +27,83 @@ from indexer import run_index, open_db, IndexSummary, IndexAlreadyRunning, Index
 
 cfg = get_config()
 
+# 起動時に一度だけスキーマを保証する(_ensure_db_schema の定義は下記)。
+# get_conn() 経由の各リクエストは ensure_schema=False で開くため、
+# ここで先にテーブル・インデックスを作っておく必要がある。
+
 # ---------------------------------------------------------------------------
-# DB接続: スレッドセーフのため、リクエストごとにローカル接続を作るのではなく、
-# check_same_thread=False の共有接続 + ロックで保護する。
-# SQLiteはWALモードで単一ライタ・複数リーダに強いが、
-# ここでは単純さと安全性を優先し、書き込み/読み込みともにロックを介して直列化する。
+# DB接続: スレッドごとに個別の接続を持つ(threading.local)。
+# SQLiteのWALモードは「単一ライタ・複数リーダ同時実行」に対応しているため、
+# app.py側の全リクエストを1本のLock+共有接続で直列化する必要はない。
+# 別プロセス(indexer.py)が長時間の取り込み中でも、あるリクエストがSQLite側の
+# ロック待ち(busy_timeout最大30秒)で詰まったとき、スレッドごとに接続を
+# 分けておけば他の無関係なリクエストを巻き込まずに済む。
+# _all_conns は /api/reset でDBファイルを削除する前に、生成済みの全接続を
+# 確実に閉じる(Windowsでは開いたままのハンドルがあるとファイル削除に失敗
+# しうる)ために追跡する。
 # ---------------------------------------------------------------------------
-_db_lock = threading.Lock()
-_conn: Optional[sqlite3.Connection] = None
+_db_local = threading.local()
+_all_conns_lock = threading.Lock()
+_all_conns: list[sqlite3.Connection] = []
+# /api/reset で全接続を閉じるたびに+1する世代カウンタ。各スレッドは自分が
+# 接続を作った時点の世代を覚えておき、現在の世代とずれていたら
+# (=自分の知らない間にresetが起きて接続が閉じられた)再接続する。
+_db_generation = 0
 
 
 def get_conn() -> sqlite3.Connection:
-    global _conn
-    if _conn is None:
-        _conn = open_db(cfg.db_path)
-        _conn.row_factory = sqlite3.Row
-    return _conn
+    conn = getattr(_db_local, "conn", None)
+    gen = getattr(_db_local, "gen", -1)
+    if conn is None or gen != _db_generation:
+        # ensure_schema=False: スキーマ作成(CREATE TABLE/INDEX IF NOT EXISTS)は
+        # プロセス起動時に _ensure_db_schema() で一度だけ済ませておく。
+        # リクエスト処理のたびにここで実行すると、indexer.pyが長時間の書き込み
+        # トランザクション中は毎回busy_timeoutブロックの起点になってしまうため。
+        conn = open_db(cfg.db_path, ensure_schema=False)
+        conn.row_factory = sqlite3.Row
+        _db_local.conn = conn
+        _db_local.gen = _db_generation
+        with _all_conns_lock:
+            _all_conns.append(conn)
+    return conn
+
+
+def _ensure_db_schema() -> None:
+    """起動時に一度だけ、DBファイルとスキーマの存在を保証する。
+
+    以降のリクエストは get_conn() で ensure_schema=False の接続を使うため、
+    ここでテーブル・インデックスを先に作っておく必要がある
+    (indexer.py側が先に作っている場合はCREATE ... IF NOT EXISTSなので無害)。
+    """
+    conn = open_db(cfg.db_path, ensure_schema=True)
+    conn.close()
+
+
+_ensure_db_schema()
 
 
 def query_all(sql: str, params: tuple = ()) -> list[sqlite3.Row]:
-    with _db_lock:
-        conn = get_conn()
-        cur = conn.execute(sql, params)
-        return cur.fetchall()
+    conn = get_conn()
+    cur = conn.execute(sql, params)
+    return cur.fetchall()
+
+
+def _close_all_conns() -> None:
+    """全スレッドの接続を閉じ、世代カウンタを進める(/api/reset専用)。
+
+    sqlite3.Connection.close() は他スレッドから呼んでも安全(Python公式
+    ドキュメントで明言されている数少ない例外的操作)なため、ここでまとめて
+    閉じられる。世代カウンタを進めることで、各スレッドは次にget_conn()を
+    呼んだ際「自分の接続は古い世代のものだ」と気づいて再接続する
+    (閉じられた接続を掴んだまま使い続けることがない)。
+    """
+    global _db_generation
+    with _all_conns_lock:
+        for c in _all_conns:
+            with contextlib.suppress(Exception):
+                c.close()
+        _all_conns.clear()
+        _db_generation += 1
 
 
 def query_one(sql: str, params: tuple = ()) -> Optional[sqlite3.Row]:
@@ -57,9 +113,10 @@ def query_one(sql: str, params: tuple = ()) -> Optional[sqlite3.Row]:
 
 # ---------------------------------------------------------------------------
 # user.db 接続: お気に入り等ユーザー由来データ専用のDB。
-# index.db (_db_lock/_conn) とは完全に別ファイル・別ロックで管理し、
-# indexer.py の --rebuild や /api/reset の index.db 削除処理からは触れない。
-# 接続管理のパターン自体は index.db 側 (_db_lock/_conn/get_conn) と揃える。
+# index.db とは完全に別ファイル・別ロックで管理し、indexer.py の --rebuild や
+# /api/reset の index.db 削除処理からは触れない。
+# こちらは書き込み(お気に入り登録)が主で同時アクセス数も少ないため、
+# index.db 側のようなスレッドローカル化はせず、単一共有接続+ロックのままにする。
 # ---------------------------------------------------------------------------
 _user_db_lock = threading.Lock()
 _user_conn: Optional[sqlite3.Connection] = None
@@ -114,6 +171,19 @@ def user_execute(sql: str, params: tuple = ()) -> None:
 
 # ---------------------------------------------------------------------------
 # 再インデックス状態管理
+#
+# ロックを2種類に分ける:
+# - _reindex_run_lock: 「reindexが実行中か」の相互排他そのもの。
+#   _run_reindex_background が run_index() 実行中(取り込み全体、数十秒〜数分)
+#   ずっと保持し続ける長時間ロック。api_reset() がこれを使い、reindex実行中の
+#   resetを防ぐ(取得できなければ即409、ブロッキング待ちはしない)。
+# - _reindex_state_lock: _reindex_state 辞書そのものの読み書きだけを保護する
+#   短命ロック。進捗コールバックや状態参照のたびに一瞬だけ取る。
+#
+# api_reindex_status のような「状態を読むだけ」のエンドポイントは、必ず
+# _reindex_state_lock の方を使うこと。_reindex_run_lock をブロッキング取得
+# すると、reindex実行中はそのAPIが取り込み完了までずっと応答を返せなくなり、
+# イベントループを長時間占有して他の無関係なリクエストまで巻き込んでしまう。
 # ---------------------------------------------------------------------------
 _reindex_state = {
     "running": False,
@@ -123,48 +193,57 @@ _reindex_state = {
     "last_error": None,
     "progress": None,
 }
-_reindex_lock = threading.RLock()
+_reindex_run_lock = threading.RLock()
+_reindex_state_lock = threading.Lock()
 
 
 def _reindex_progress_cb(payload: dict):
-    with _reindex_lock:
+    with _reindex_state_lock:
         _reindex_state["progress"] = payload
 
 
 def _run_reindex_background(mode: str = "incremental"):
-    # _reindex_lock は「実行中フラグの排他」だけでなく、api_reset() のDB削除処理との
-    # 相互排他も兼ねる。ここで確保したロックは reindex 完了まで解放しないため、
+    # _reindex_run_lock は「実行中フラグの排他」だけでなく、api_reset() のDB削除処理
+    # との相互排他も兼ねる。ここで確保したロックは reindex 完了まで解放しないため、
     # reset実行中はreindexの開始がブロックされ、reindex実行中はresetがブロックされる
     # （api_reset側は非ブロッキングでこのロックを試み、取れなければ409を返す）。
     # 真の排他制御（他プロセス・CLI実行との競合防止）は
     # run_index() 内の IndexLock（data/.index.lock, PID+stale判定）が担う。
-    if not _reindex_lock.acquire(blocking=False):
+    # _reindex_state 辞書自体への読み書きは、この長時間ロックとは別の
+    # _reindex_state_lock(短命)で保護する。他スレッド(APIハンドラ)は
+    # _reindex_run_lock を待たずに状態を読めるようにするため。
+    if not _reindex_run_lock.acquire(blocking=False):
         return
     try:
-        if _reindex_state["running"]:
-            return
-        _reindex_state["running"] = True
-        _reindex_state["started_at"] = time.time()
-        _reindex_state["last_error"] = None
-        _reindex_state["progress"] = None
+        with _reindex_state_lock:
+            if _reindex_state["running"]:
+                return
+            _reindex_state["running"] = True
+            _reindex_state["started_at"] = time.time()
+            _reindex_state["last_error"] = None
+            _reindex_state["progress"] = None
 
         try:
             summary = run_index(mode=mode, cfg=cfg, progress_cb=_reindex_progress_cb)
-            _reindex_state["last_summary"] = summary.__dict__
+            with _reindex_state_lock:
+                _reindex_state["last_summary"] = summary.__dict__
         except IndexAlreadyRunning as ex:
             # 他プロセス（別のindexer.py実行など）が既にロックを保持している。
-            _reindex_state["last_error"] = f"already_running: {ex}"
+            with _reindex_state_lock:
+                _reindex_state["last_error"] = f"already_running: {ex}"
             print(f"[reindex] skipped, already running elsewhere: {ex}")
         except Exception as ex:
-            _reindex_state["last_error"] = str(ex)
+            with _reindex_state_lock:
+                _reindex_state["last_error"] = str(ex)
             print(f"[reindex] error: {ex}")
         finally:
-            _reindex_state["running"] = False
-            _reindex_state["finished_at"] = time.time()
+            with _reindex_state_lock:
+                _reindex_state["running"] = False
+                _reindex_state["finished_at"] = time.time()
             # 再インデックス後、次回クエリで最新DB内容を見えるようにするため接続はそのまま
             # (同一プロセス内の同一コネクションなので自動的に見える)
     finally:
-        _reindex_lock.release()
+        _reindex_run_lock.release()
 
 
 @asynccontextmanager
@@ -179,6 +258,27 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="坂道メッセージビューア", lifespan=lifespan)
+
+
+# 調査用: SQLiteロック待ち等で一部リクエストだけ極端に遅くなる場合に備え、
+# 閾値を超えたリクエストのみサーバ側ログにも出す。フロント側(index.html の
+# fetchJson)の計測と突き合わせて、ブラウザ〜サーバ間なのかサーバ内部
+# (DB待ち等)なのかを切り分けられるようにする。
+# config-dev.json 使用時(=開発環境)のみ有効にし、本番運用(config.json)では
+# 出力しない。
+_SLOW_REQUEST_THRESHOLD_SEC = 1.0
+
+
+@app.middleware("http")
+async def _log_slow_requests(request: Request, call_next):
+    if not cfg.is_dev:
+        return await call_next(request)
+    t0 = time.time()
+    response = await call_next(request)
+    elapsed = time.time() - t0
+    if elapsed >= _SLOW_REQUEST_THRESHOLD_SEC:
+        print(f"[slow] {request.method} {request.url.path} took {elapsed:.1f}s", file=sys.stderr)
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -725,6 +825,9 @@ async def api_get_settings():
     return {
         "root": str(cfg.root) if cfg.root is not None else None,
         "configured": cfg.root is not None,
+        # フロント側の調査用コンソールログ(Sidebar.load等)を開発環境限定に
+        # するための判定材料。config-dev.json使用時のみ true。
+        "is_dev": cfg.is_dev,
     }
 
 
@@ -742,7 +845,7 @@ async def api_set_settings(payload: dict):
 
     resolved = save_root(cfg, new_root)
 
-    with _reindex_lock:
+    with _reindex_state_lock:
         already_running = _reindex_state["running"]
     if not already_running:
         t = threading.Thread(target=_run_reindex_background, kwargs={"mode": "incremental"}, daemon=True)
@@ -755,17 +858,21 @@ async def api_set_settings(payload: dict):
 async def api_reset():
     """DB・サムネイル・保存フォルダ設定を初期化する（初回起動相当の状態に戻す）。
 
-    _reindex_lock を削除処理が終わるまで保持し続けることで、reindexスレッド
+    _reindex_run_lock を削除処理が終わるまで保持し続けることで、reindexスレッド
     （_run_reindex_background）と相互排他する。ロックが取れない場合は
     reindexが実行中ということなので即409を返す（TOCTOUレース防止）。
+    ここは元々ブロッキングせずに即409を返す設計なので、長時間ロックを
+    そのまま使っても他のリクエストを巻き込む問題は起きない。
     """
-    global _conn, _user_conn
+    global _user_conn
 
-    if not _reindex_lock.acquire(blocking=False):
+    if not _reindex_run_lock.acquire(blocking=False):
         return JSONResponse({"status": "already_running"}, status_code=409)
 
     try:
-        if _reindex_state["running"]:
+        with _reindex_state_lock:
+            already_running = _reindex_state["running"]
+        if already_running:
             return JSONResponse({"status": "already_running"}, status_code=409)
 
         other_pid = IndexLock(cfg.index_lock_path).peek_running_pid()
@@ -775,26 +882,28 @@ async def api_reset():
                 status_code=409,
             )
 
-        with _db_lock:
-            if _conn is not None:
-                _conn.close()
-                _conn = None
+        _close_all_conns()
 
-            if cfg.db_path.exists():
-                cfg.db_path.unlink()
-            for suffix in ("-wal", "-shm"):
-                p = Path(str(cfg.db_path) + suffix)
-                if p.exists():
-                    p.unlink()
+        if cfg.db_path.exists():
+            cfg.db_path.unlink()
+        for suffix in ("-wal", "-shm"):
+            p = Path(str(cfg.db_path) + suffix)
+            if p.exists():
+                p.unlink()
 
-            if cfg.thumbs_dir.exists():
-                shutil.rmtree(cfg.thumbs_dir)
-            cfg.thumbs_dir.mkdir(parents=True, exist_ok=True)
+        # get_conn() は ensure_schema=False で開くため、削除した空DBに対して
+        # 次のリクエストがテーブル未作成のままSELECTしてしまわないよう、
+        # ここで即座にスキーマを作り直しておく。
+        _ensure_db_schema()
 
-            for name in ("progress.json", ".index.lock"):
-                p = cfg.data_dir / name
-                if p.exists():
-                    p.unlink()
+        if cfg.thumbs_dir.exists():
+            shutil.rmtree(cfg.thumbs_dir)
+        cfg.thumbs_dir.mkdir(parents=True, exist_ok=True)
+
+        for name in ("progress.json", ".index.lock"):
+            p = cfg.data_dir / name
+            if p.exists():
+                p.unlink()
 
         # /api/reset は「初回起動時の状態に戻す」処理であり、お気に入り(user.db)も
         # 対象に含める。index.dbとは別ファイル・別ロック(_user_db_lock)なので、
@@ -813,14 +922,15 @@ async def api_reset():
 
         clear_root(cfg)
 
-        _reindex_state["running"] = False
-        _reindex_state["started_at"] = None
-        _reindex_state["finished_at"] = None
-        _reindex_state["last_summary"] = None
-        _reindex_state["last_error"] = None
-        _reindex_state["progress"] = None
+        with _reindex_state_lock:
+            _reindex_state["running"] = False
+            _reindex_state["started_at"] = None
+            _reindex_state["finished_at"] = None
+            _reindex_state["last_summary"] = None
+            _reindex_state["last_error"] = None
+            _reindex_state["progress"] = None
     finally:
-        _reindex_lock.release()
+        _reindex_run_lock.release()
 
     return {"status": "reset"}
 
@@ -833,7 +943,7 @@ async def api_reindex():
     if cfg.root is None:
         return JSONResponse({"status": "root_not_configured"}, status_code=409)
 
-    with _reindex_lock:
+    with _reindex_state_lock:
         if _reindex_state["running"]:
             return JSONResponse({"status": "already_running"}, status_code=409)
 
@@ -872,7 +982,7 @@ def _read_progress_file() -> Optional[dict]:
 
 @app.get("/api/reindex/status")
 async def api_reindex_status():
-    with _reindex_lock:
+    with _reindex_state_lock:
         state = {
             "running": _reindex_state["running"],
             "started_at": _reindex_state["started_at"],
@@ -940,6 +1050,19 @@ async def index():
 
 
 if __name__ == "__main__":
+    import sys
+
     import uvicorn
+
+    if sys.platform == "win32":
+        # WindowsのデフォルトProactorEventLoopは、クライアントが接続を確立途中
+        # (TCPハンドシェイク後、ブラウザのタブを閉じる等)で切断した際に
+        # OSErrorがaccept_coro自体を異常終了させ、以降そのイベントループが
+        # 二度とacceptしなくなる(サーバプロセスは生きているのに新規接続だけ
+        # 全て拒否される)既知の弱点がある。SelectorEventLoopはaccept処理の
+        # 実装が異なりこの種のクラッシュを起こさないため、Windows限定で
+        # 明示的に切り替える(このアプリはasyncio経由のsubprocessを使わないため
+        # SelectorEventLoopの制限の影響を受けない)。
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     uvicorn.run("app:app", host="127.0.0.1", port=cfg.port, reload=False, log_level="info", access_log=False)

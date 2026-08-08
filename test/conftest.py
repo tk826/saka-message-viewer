@@ -111,9 +111,7 @@ def app_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     importlib.reload(app_module_ref)
     yield app_module_ref
 
-    if app_module_ref._conn is not None:
-        app_module_ref._conn.close()
-        app_module_ref._conn = None
+    app_module_ref._close_all_conns()
     if app_module_ref._user_conn is not None:
         app_module_ref._user_conn.close()
         app_module_ref._user_conn = None
@@ -135,7 +133,7 @@ def wait_for_reindex_idle(app_module, timeout: float = 5.0) -> None:
 
     deadline = time.time() + timeout
     while time.time() < deadline:
-        with app_module._reindex_lock:
+        with app_module._reindex_state_lock:
             if not app_module._reindex_state["running"]:
                 return
         time.sleep(0.02)

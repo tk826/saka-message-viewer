@@ -25,7 +25,7 @@ import sqlite3
 import subprocess
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -70,16 +70,42 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
 """
 
 
-def open_db(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path), check_same_thread=False)
+def open_db(db_path: Path, ensure_schema: bool = True) -> sqlite3.Connection:
+    """DB接続を開く。
+
+    ensure_schema=True (既定・indexer.py用) は CREATE TABLE/INDEX IF NOT EXISTS
+    でスキーマを保証する。ensure_schema=False (app.py の読み取り専用接続用) は
+    それを省略する。
+    CREATE ... IF NOT EXISTS は対象が既に存在していても、実行するために一瞬
+    書き込みロック相当を取得する必要があるSQLiteの仕様があり、indexer.pyが
+    長時間の書き込みトランザクションを保持している間、app.py側が新しい
+    スレッドで初めてDBへアクセスするたびにこの一瞬のロック取得待ちで
+    busy_timeout(最大30秒)ブロックされてしまう(スレッドを分離しても
+    open_db自体がここで直列化点になっていた)。app.py側はテーブルが
+    既に存在する前提(indexer.pyが最初に作る)で読むだけにすることで、
+    このブロッキングを避ける。
+
+    ensure_schema=False の接続は isolation_level=None (autocommit) にする。
+    デフォルトのレガシーモード(isolation_level="")だとSELECT実行後も暗黙の
+    読み取りトランザクションが開いたままになりうる。app.py側は読み取り専用で
+    トランザクションの原子性を必要としないため、autocommitにしてクエリ完了
+    時点で即座にスナップショットを解放させ、他プロセスの書き込みや
+    チェックポイントを不必要に妨げないようにする。
+    """
+    conn = sqlite3.connect(
+        str(db_path),
+        check_same_thread=False,
+        isolation_level=None if not ensure_schema else "",
+    )
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     # 書き込み側・読み取り側どちらの接続でも、ロック競合時にすぐ例外化せず
     # 一定時間はリトライ待ちさせる（database is locked 対策）。
     conn.execute("PRAGMA busy_timeout=30000;")
-    conn.executescript(SCHEMA_SQL)
-    conn.executescript(FTS_SQL)
-    conn.commit()
+    if ensure_schema:
+        conn.executescript(SCHEMA_SQL)
+        conn.executescript(FTS_SQL)
+        conn.commit()
     return conn
 
 
@@ -337,6 +363,27 @@ class ProgressFileWriter:
         )
 
 
+_CHECKPOINT_WAL_THRESHOLD_BYTES = 8 * 1024 * 1024  # 8MB
+
+
+def _checkpoint_if_wal_large(conn: sqlite3.Connection, db_path: Path) -> None:
+    """WALファイルが一定サイズを超えていたらPASSIVEチェックポイントする。
+
+    PASSIVEチェックポイントはWAL全体を走査するため、コストはWALサイズに比例する。
+    commitのたびに毎回呼ぶと、WALが大きくなるほど1回あたりのコストが伸び、
+    特にHDDではO(件数^2)相当の劣化として顕在化しうる。
+    サイズ閾値を設けることで「ビューア側がWAL経由で都度読める」利点を保ちつつ、
+    チェックポイント自体の呼び出し回数を抑える。
+    """
+    wal_path = Path(str(db_path) + "-wal")
+    try:
+        size = wal_path.stat().st_size
+    except FileNotFoundError:
+        return
+    if size >= _CHECKPOINT_WAL_THRESHOLD_BYTES:
+        conn.execute("PRAGMA wal_checkpoint(PASSIVE);")
+
+
 def rebuild_db(db_path: Path) -> sqlite3.Connection:
     """既存DBファイルを削除して作り直す。"""
     if db_path.exists():
@@ -421,17 +468,90 @@ def _member_dir_for(root: Path, member: str, only_member: Optional[str]) -> bool
     return member == only_member
 
 
+def _scan_member(
+    root: Path,
+    member_dir: Path,
+    member: str,
+    group: Optional[str],
+    member_recent: Optional[set[str]],
+) -> tuple[list[FileEntry], list[Optional[str]]]:
+    """1メンバー分のYYYY/YYYYMMディレクトリを走査する(スレッドワーカー用)。
+
+    戻り値: (このメンバーのFileEntry一覧, このメンバーで実際に走査したyyyymmの一覧
+    (Noneが1件でも入っていれば全体スコープを意味する))。
+    ScanScopeへの反映は呼び出し元(メインスレッド)でまとめて行い、
+    複数スレッドから共有オブジェクトを直接更新しないようにする。
+    """
+    entries: list[FileEntry] = []
+    touched_yearmonths: list[Optional[str]] = []
+
+    year_dirs = [d for d in member_dir.iterdir() if d.is_dir() and YEAR_DIR_RE.match(d.name)]
+    for year_dir in sorted(year_dirs):
+        month_dirs = [
+            d for d in year_dir.iterdir() if d.is_dir() and YEARMONTH_DIR_RE.match(d.name)
+        ]
+        for month_dir in sorted(month_dirs):
+            yyyymm = month_dir.name
+            if member_recent is not None and yyyymm not in member_recent:
+                continue
+            touched_yearmonths.append(yyyymm)
+            for f in month_dir.iterdir():
+                if not f.is_file():
+                    continue
+                m = FILENAME_RE.match(f.name)
+                if not m:
+                    continue
+                msg_id_s, flag_s, ts_raw, ext = m.groups()
+                rel_path = f.relative_to(root).as_posix()
+                entries.append(
+                    FileEntry(
+                        path=f,
+                        rel_path=rel_path,
+                        member=member,
+                        group=group,
+                        msg_id=int(msg_id_s),
+                        flag=int(flag_s),
+                        ts_raw=ts_raw,
+                        ext=ext.lower(),
+                    )
+                )
+
+    if member_recent is None:
+        touched_yearmonths.append(None)  # full scan (新規メンバー含む) -> 全体スコープ
+
+    return entries, touched_yearmonths
+
+
+def _default_scan_workers() -> int:
+    """discover_filesの既定並列数。CPU数の半分(最低1)。
+
+    走査自体はI/Oバウンドだがファイル名の正規表現マッチ等でGILも使うため、
+    全コアを使い切ると他処理(サムネ生成のProcessPoolExecutor等)を圧迫しうる。
+    半分に抑えて他処理と共存しやすくする。
+    """
+    cpu_count = os.cpu_count() or 2
+    return max(1, cpu_count // 2)
+
+
 def discover_files(
     cfg: Config,
     mode: str,
     only_member: Optional[str] = None,
     known_members: Optional[set[str]] = None,
+    max_workers: Optional[int] = None,
 ) -> tuple[list[FileEntry], ScanScope]:
     """走査対象ファイルを列挙する。mode: 'full' | 'incremental'.
 
     known_members: incrementalモード時、DBに既に取り込み済みのメンバー名の集合。
     ここに含まれない(＝まだ一度も取り込んだことがない)メンバーは、新規追加とみなし
     直近Nヶ月の範囲に関係なく全期間を走査する。
+
+    max_workers: Noneの場合はCPU数の半分(最低1)を使う(_default_scan_workers参照)。
+
+    メンバーごとの走査はI/Oバウンド(ディレクトリ列挙)なので、メンバー単位で
+    ThreadPoolExecutorに投げて並列化する。特にネットワークドライブ配下では
+    1回のiterdir呼び出しのレイテンシが大きく、直列だとメンバー数分そのまま
+    待ち時間が積み上がるため効果が大きい。
     """
     root = cfg.root
     scope = ScanScope()
@@ -439,56 +559,38 @@ def discover_files(
 
     recent = _recent_yearmonths(cfg.incremental_months) if mode == "incremental" else None
 
-    for member_dir, member, group in _iter_member_dirs(root):
-        if not _member_dir_for(root, member, only_member):
-            continue
+    targets = [
+        (member_dir, member, group)
+        for member_dir, member, group in _iter_member_dirs(root)
+        if _member_dir_for(root, member, only_member)
+    ]
 
-        is_new_member = mode == "incremental" and known_members is not None and member not in known_members
-        member_recent = None if is_new_member else recent
+    if not targets:
+        return entries, scope
 
-        year_dirs = [d for d in member_dir.iterdir() if d.is_dir() and YEAR_DIR_RE.match(d.name)]
-        for year_dir in sorted(year_dirs):
-            month_dirs = [
-                d for d in year_dir.iterdir() if d.is_dir() and YEARMONTH_DIR_RE.match(d.name)
-            ]
-            for month_dir in sorted(month_dirs):
-                yyyymm = month_dir.name
-                if member_recent is not None and yyyymm not in member_recent:
-                    continue
+    workers = max_workers if max_workers is not None else _default_scan_workers()
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {}
+        for member_dir, member, group in targets:
+            is_new_member = mode == "incremental" and known_members is not None and member not in known_members
+            member_recent = None if is_new_member else recent
+            fut = executor.submit(_scan_member, root, member_dir, member, group, member_recent)
+            futures[fut] = member
+
+        for fut in futures:
+            member = futures[fut]
+            member_entries, touched_yearmonths = fut.result()
+            entries.extend(member_entries)
+            for yyyymm in touched_yearmonths:
                 scope.add(member, yyyymm)
-                for f in month_dir.iterdir():
-                    if not f.is_file():
-                        continue
-                    m = FILENAME_RE.match(f.name)
-                    if not m:
-                        continue
-                    msg_id_s, flag_s, ts_raw, ext = m.groups()
-                    rel_path = f.relative_to(root).as_posix()
-                    entries.append(
-                        FileEntry(
-                            path=f,
-                            rel_path=rel_path,
-                            member=member,
-                            group=group,
-                            msg_id=int(msg_id_s),
-                            flag=int(flag_s),
-                            ts_raw=ts_raw,
-                            ext=ext.lower(),
-                        )
-                    )
-
-        if member_recent is None:
-            scope.add(member, None)  # full scan (新規メンバー含む) -> 全体スコープ
 
     return entries, scope
 
 
 def parse_ts_jst(ts_raw: str) -> int:
-    """YYYYMMDDHHMMSS 文字列(JSTとして解釈)を unix epoch秒に変換する。"""
+    """YYYYMMDDHHMMSS 文字列(UTCとして解釈)を unix epoch秒に変換する。"""
     dt = datetime.strptime(ts_raw, "%Y%m%d%H%M%S")
-    # dtをJSTのnaive時刻とみなし、UTC epochに変換する: epoch = calendar.timegm(dt) - 9時間
-    utc_epoch = calendar.timegm(dt.timetuple())
-    return utc_epoch - 9 * 3600
+    return calendar.timegm(dt.timetuple())
 
 
 def thumb_rel_path(member: str, msg_id: int) -> str:
@@ -649,6 +751,10 @@ def _gen_image_thumb(src: Path, dst: Path, thumb_size: int, thumb_quality: int) 
     from PIL import Image
 
     with Image.open(src) as im:
+        # draft()はJPEGのDCTスケーリングを使い、フルデコード前に近いサイズまで
+        # 縮小した状態でデコードさせるヒント。非JPEG(PNG等)には効果がないが
+        # 無視されるだけで安全。フルデコード+Pillow側リサイズより大幅に速い。
+        im.draft("RGB", (thumb_size, thumb_size))
         im = im.convert("RGB")
         im.thumbnail((thumb_size, thumb_size))
         im.save(dst, "JPEG", quality=thumb_quality)
@@ -835,11 +941,25 @@ def _run_index_locked(
 
         cur = conn.cursor()
 
-        # 既存行をロード（このスコープに関係するmemberのみで十分だが、シンプルに全件ロード）
+        # 既存行をロード。DB全件ではなく、今回走査対象のmemberに関係する行だけに絞る
+        # （missing判定にも同じscopeのmemberが要るため後段で再利用する）。
+        _t_existing = time.time()
+        scope_members = list(scope.member_yearmonths.keys())
         existing = {}
-        cur.execute("SELECT member, msg_id, body, media, kind, flag, thumb, missing, ts_raw FROM messages")
-        for row in cur.fetchall():
-            existing[(row[0], row[1])] = row
+        if scope_members:
+            placeholders = ",".join("?" for _ in scope_members)
+            cur.execute(
+                f"SELECT member, msg_id, body, media, kind, flag, thumb, missing, ts_raw "
+                f"FROM messages WHERE member IN ({placeholders})",
+                scope_members,
+            )
+            for row in cur.fetchall():
+                existing[(row[0], row[1])] = row
+        if cfg.is_dev:
+            print(
+                f"[index] loaded {len(existing)} existing rows in {time.time() - _t_existing:.1f}s",
+                file=sys.stderr,
+            )
 
         seen_keys: set[tuple[str, int]] = set()
         thumb_jobs = []  # (src_path_str, dst_path_str, member, msg_id, thumb_rel, kind)
@@ -848,128 +968,184 @@ def _run_index_locked(
         done = 0
         total = len(grouped)
 
-        for (member, msg_id), files in grouped.items():
-            done += 1
-            seen_keys.add((member, msg_id))
-            row = _build_message_row(member, msg_id, files)
-            key = (member, msg_id)
-            prev = existing.get(key)
+        # 処理測定用: フェーズ別の累積時間(秒)。「後半になるほど遅くなる」系の
+        # 劣化はどこが支配的かで対処が変わる(例: FTS検索/DB書き込み/commit/
+        # checkpoint/ファイルI/O)ため、進捗ログに内訳を出して切り分けられるようにする。
+        timing = {"read": 0.0, "db": 0.0, "commit": 0.0, "checkpoint": 0.0}
 
-            thumb_rel = None
-            if prev is not None:
-                thumb_rel = prev[6]  # thumb column
+        # _build_message_row はメンバー/グループ変数に触れない純粋な処理で、大半は
+        # txt本文のディスク読み込み(I/O待ち)が占める。ネットワークドライブ等では
+        # 1件あたりのレイテンシが支配的になるため、スレッドプールで先読みして
+        # I/O待ちを重ね、DB書き込み(逐次実行が必要)側をボトルネックにしない。
+        grouped_items = list(grouped.items())
+        read_workers = _default_scan_workers()
+        with ThreadPoolExecutor(max_workers=read_workers) as read_executor:
+            built_rows = read_executor.map(
+                lambda kv: _build_message_row(kv[0][0], kv[0][1], kv[1]), grouped_items
+            )
 
-            need_thumb = False
-            jpg_file = next((f for f in files if f.ext == "jpg"), None)
-            # jpgサムネ(画像メッセージ)が無いときだけ、ffmpegがあれば動画(flag=2)のmp4を対象にする。
-            # 音声(flag=3)もmp4拡張子を使うため、flagでvideoのみに絞る点に注意。
-            video_file = None
-            if jpg_file is None and has_ffmpeg:
-                video_file = next((f for f in files if f.ext == "mp4" and f.flag == 2), None)
-            thumb_src_file = jpg_file or video_file
-            thumb_kind = "image" if jpg_file is not None else "video"
+            for (member, msg_id), files in grouped_items:
+                done += 1
+                seen_keys.add((member, msg_id))
+                _t0 = time.time()
+                row = next(built_rows)
+                timing["read"] += time.time() - _t0
+                key = (member, msg_id)
+                prev = existing.get(key)
 
-            if thumb_src_file is not None and not no_thumbs:
-                thumb_rel_candidate = thumb_rel_path(member, msg_id)
-                thumb_abs = cfg.thumbs_dir / thumb_rel_candidate
-                if not thumb_abs.exists():
-                    # 既にサムネがあるものは再生成しない差分方式のため、後からffmpegを
-                    # 導入して再取り込みしても、未生成の動画サムネだけが積まれる。
-                    need_thumb = True
-                    thumb_jobs.append(
-                        (str(thumb_src_file.path), str(thumb_abs), member, msg_id, thumb_rel_candidate, thumb_kind)
-                    )
-                thumb_rel = thumb_rel_candidate
+                thumb_rel = None
+                if prev is not None:
+                    thumb_rel = prev[6]  # thumb column
 
-            if prev is None:
-                # 通常は INSERT だが、(member, msg_id) がスナップショット取得後に
-                # 他所から挿入されていた場合に備えて ON CONFLICT DO UPDATE で
-                # 冪等化する（多重実行防止ロックがあっても、同一プロセス内の
-                # 再走査や将来の防御崩れに対する保険として残す）。
-                # thumbは新規時、既存のthumb値を壊さないよう COALESCE で保護する。
-                cur.execute(
-                    """INSERT INTO messages
-                       (member, group_, msg_id, ts, ts_raw, body, media, kind, flag, thumb, missing)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,0)
-                       ON CONFLICT(member, msg_id) DO UPDATE SET
-                         group_=excluded.group_,
-                         ts=excluded.ts,
-                         ts_raw=excluded.ts_raw,
-                         body=excluded.body,
-                         media=excluded.media,
-                         kind=excluded.kind,
-                         flag=excluded.flag,
-                         thumb=COALESCE(excluded.thumb, messages.thumb),
-                         missing=0""",
-                    (
-                        row["member"], row["group_"], row["msg_id"], row["ts"], row["ts_raw"],
-                        row["body"], row["media"], row["kind"], row["flag"], thumb_rel,
-                    ),
-                )
-                # FTS整合: conflict/insertいずれでも既存FTS行を消してから入れ直す
-                # （挿入かconflict-updateかをPython側から判別できないため一律この手順にする）。
-                cur.execute("SELECT rowid FROM messages_fts WHERE member=? AND msg_id=?", (member, msg_id))
-                fr = cur.fetchone()
-                if fr:
-                    cur.execute("DELETE FROM messages_fts WHERE rowid=?", (fr[0],))
-                if row["body"]:
+                need_thumb = False
+                jpg_file = next((f for f in files if f.ext == "jpg"), None)
+                # jpgサムネ(画像メッセージ)が無いときだけ、ffmpegがあれば動画(flag=2)のmp4を対象にする。
+                # 音声(flag=3)もmp4拡張子を使うため、flagでvideoのみに絞る点に注意。
+                video_file = None
+                if jpg_file is None and has_ffmpeg:
+                    video_file = next((f for f in files if f.ext == "mp4" and f.flag == 2), None)
+                thumb_src_file = jpg_file or video_file
+                thumb_kind = "image" if jpg_file is not None else "video"
+
+                if thumb_src_file is not None and not no_thumbs:
+                    thumb_rel_candidate = thumb_rel_path(member, msg_id)
+                    thumb_abs = cfg.thumbs_dir / thumb_rel_candidate
+                    if not thumb_abs.exists():
+                        # 既にサムネがあるものは再生成しない差分方式のため、後からffmpegを
+                        # 導入して再取り込みしても、未生成の動画サムネだけが積まれる。
+                        need_thumb = True
+                        thumb_jobs.append(
+                            (str(thumb_src_file.path), str(thumb_abs), member, msg_id, thumb_rel_candidate, thumb_kind)
+                        )
+                    thumb_rel = thumb_rel_candidate
+
+                _t1 = time.time()
+                if prev is None:
+                    # 通常は INSERT だが、(member, msg_id) がスナップショット取得後に
+                    # 他所から挿入されていた場合に備えて ON CONFLICT DO UPDATE で
+                    # 冪等化する（多重実行防止ロックがあっても、同一プロセス内の
+                    # 再走査や将来の防御崩れに対する保険として残す）。
+                    # thumbは新規時、既存のthumb値を壊さないよう COALESCE で保護する。
                     cur.execute(
-                        "INSERT INTO messages_fts(rowid, body, member, msg_id) VALUES ((SELECT rowid FROM messages WHERE member=? AND msg_id=?), ?, ?, ?)",
-                        (member, msg_id, row["body"], member, msg_id),
-                    )
-                summary.new_count += 1
-            else:
-                prev_body, prev_media, prev_kind, prev_flag, prev_thumb, prev_missing, prev_ts_raw = prev[2:]
-                changed = (
-                    prev_body != row["body"]
-                    or prev_media != row["media"]
-                    or prev_kind != row["kind"]
-                    or prev_flag != row["flag"]
-                    or prev_missing != 0
-                    or prev_ts_raw != row["ts_raw"]
-                    or (thumb_rel is not None and prev_thumb != thumb_rel)
-                )
-                if changed:
-                    cur.execute(
-                        """UPDATE messages SET group_=?, ts=?, ts_raw=?, body=?, media=?, kind=?, flag=?, thumb=?, missing=0
-                           WHERE member=? AND msg_id=?""",
+                        """INSERT INTO messages
+                           (member, group_, msg_id, ts, ts_raw, body, media, kind, flag, thumb, missing)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,0)
+                           ON CONFLICT(member, msg_id) DO UPDATE SET
+                             group_=excluded.group_,
+                             ts=excluded.ts,
+                             ts_raw=excluded.ts_raw,
+                             body=excluded.body,
+                             media=excluded.media,
+                             kind=excluded.kind,
+                             flag=excluded.flag,
+                             thumb=COALESCE(excluded.thumb, messages.thumb),
+                             missing=0""",
                         (
-                            row["group_"], row["ts"], row["ts_raw"], row["body"], row["media"],
-                            row["kind"], row["flag"], thumb_rel, member, msg_id,
+                            row["member"], row["group_"], row["msg_id"], row["ts"], row["ts_raw"],
+                            row["body"], row["media"], row["kind"], row["flag"], thumb_rel,
                         ),
                     )
-                    # FTS更新: 既存rowidを探して置き換え
-                    cur.execute("SELECT rowid FROM messages_fts WHERE member=? AND msg_id=?", (member, msg_id))
-                    fr = cur.fetchone()
-                    if fr:
-                        cur.execute("DELETE FROM messages_fts WHERE rowid=?", (fr[0],))
+                    # FTS整合: messages_fts は member/msg_id が UNINDEXED のため、
+                    # 存在確認のSELECTはインデックスが効かずFTS内部を線形走査する。
+                    # 行数が増えるほど1回のコストが伸びるため、新規行(全体の大多数)に
+                    # 対して毎回これを行うとO(件数^2)の劣化になる。
+                    # ここに来るのは existing に無かった(=新規)キーなので、通常は
+                    # messages_fts側にも行が無い。よって存在確認のSELECT/DELETEは省略し、
+                    # そのままINSERTする(ON CONFLICTでのUPDATE分岐は既存行が対象になる
+                    # ため、そちらは従来通りDELETE-then-INSERTのままにする)。
                     if row["body"]:
-                        # rowidをmessagesと合わせる必要はないが、結合のためrowidを引けるようにする
                         cur.execute(
                             "INSERT INTO messages_fts(rowid, body, member, msg_id) VALUES ((SELECT rowid FROM messages WHERE member=? AND msg_id=?), ?, ?, ?)",
                             (member, msg_id, row["body"], member, msg_id),
                         )
-                    summary.updated_count += 1
+                    summary.new_count += 1
                 else:
-                    summary.skipped_count += 1
+                    prev_body, prev_media, prev_kind, prev_flag, prev_thumb, prev_missing, prev_ts_raw = prev[2:]
+                    changed = (
+                        prev_body != row["body"]
+                        or prev_media != row["media"]
+                        or prev_kind != row["kind"]
+                        or prev_flag != row["flag"]
+                        or prev_missing != 0
+                        or prev_ts_raw != row["ts_raw"]
+                        or (thumb_rel is not None and prev_thumb != thumb_rel)
+                    )
+                    if changed:
+                        cur.execute(
+                            """UPDATE messages SET group_=?, ts=?, ts_raw=?, body=?, media=?, kind=?, flag=?, thumb=?, missing=0
+                               WHERE member=? AND msg_id=?""",
+                            (
+                                row["group_"], row["ts"], row["ts_raw"], row["body"], row["media"],
+                                row["kind"], row["flag"], thumb_rel, member, msg_id,
+                            ),
+                        )
+                        # FTS更新: 既存rowidを探して置き換え
+                        cur.execute("SELECT rowid FROM messages_fts WHERE member=? AND msg_id=?", (member, msg_id))
+                        fr = cur.fetchone()
+                        if fr:
+                            cur.execute("DELETE FROM messages_fts WHERE rowid=?", (fr[0],))
+                        if row["body"]:
+                            # rowidをmessagesと合わせる必要はないが、結合のためrowidを引けるようにする
+                            cur.execute(
+                                "INSERT INTO messages_fts(rowid, body, member, msg_id) VALUES ((SELECT rowid FROM messages WHERE member=? AND msg_id=?), ?, ?, ?)",
+                                (member, msg_id, row["body"], member, msg_id),
+                            )
+                        summary.updated_count += 1
+                    else:
+                        summary.skipped_count += 1
+                timing["db"] += time.time() - _t1
 
-            if done % 500 == 0 or done == total:
-                reporter.maybe_report(done, total)
-                report("upserting", done=done, total=total)
-                conn.commit()
+                if done % 100 == 0 or done == total:
+                    # フェーズ別の内訳(read/db/commit/ckpt)は調査用の詳細ログのため、
+                    # config-dev.json 使用時(開発環境)のみ出力する。
+                    extra = (
+                        f"read={timing['read']:.1f}s db={timing['db']:.1f}s "
+                        f"commit={timing['commit']:.1f}s ckpt={timing['checkpoint']:.1f}s"
+                        if cfg.is_dev else ""
+                    )
+                    reporter.maybe_report(done, total, extra=extra)
+                    report("upserting", done=done, total=total)
 
+                # commitは500件ごとに行う。ビューア側(別プロセスの読み取り)からWAL経由で
+                # 都度読めるようにしつつ、commit呼び出し自体のオーバーヘッドが
+                # 件数に比例して積み重なるのを避けるため、進捗報告(100件ごと)より
+                # 間隔を広く取る。チェックポイント自体はWALサイズ閾値ベースで
+                # 間引く(_checkpoint_if_wal_large参照)。
+                if done % 500 == 0 or done == total:
+                    _tc = time.time()
+                    conn.commit()
+                    timing["commit"] += time.time() - _tc
+                    _tk = time.time()
+                    _checkpoint_if_wal_large(conn, cfg.db_path)
+                    timing["checkpoint"] += time.time() - _tk
+
+        if cfg.is_dev:
+            print(
+                f"[index] upsert loop totals: read={timing['read']:.1f}s db={timing['db']:.1f}s "
+                f"commit={timing['commit']:.1f}s ckpt={timing['checkpoint']:.1f}s",
+                file=sys.stderr,
+            )
+        _t_final_commit = time.time()
         conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(PASSIVE);")
+        if cfg.is_dev:
+            print(f"[index] final commit+checkpoint: {time.time() - _t_final_commit:.1f}s", file=sys.stderr)
 
         # missing判定: スコープ内の (member, yearmonth) に該当する既存行のうち、
         # 今回見つからなかった (member,msg_id) を missing=1 にする。
         # yearmonthはts(JST)から求める。scope.member_yearmonths[member] が None なら全月対象。
         report("missing_check")
+        _t_missing = time.time()
         missing_updates = 0
-        cur.execute("SELECT member, msg_id, ts, missing FROM messages")
-        all_rows = cur.fetchall()
+        all_rows = []
+        if scope_members:
+            placeholders = ",".join("?" for _ in scope_members)
+            cur.execute(
+                f"SELECT member, msg_id, ts, missing FROM messages WHERE member IN ({placeholders})",
+                scope_members,
+            )
+            all_rows = cur.fetchall()
         for member, msg_id, ts, missing in all_rows:
-            if member not in scope.member_yearmonths:
-                continue
             months = scope.member_yearmonths[member]
             # tsはUTC epoch(JSTから9h引いたもの)。yyyymmはJST基準で求める必要がある。
             jst_dt = datetime.fromtimestamp(ts + 9 * 3600, tz=timezone.utc)
@@ -988,7 +1164,14 @@ def _run_index_locked(
                 if should_be_missing:
                     summary.missing_count += 1
         conn.commit()
-        print(f"[index] missing flag updates: {missing_updates}", file=sys.stderr)
+        if cfg.is_dev:
+            print(
+                f"[index] missing flag updates: {missing_updates} (checked {len(all_rows)} rows, "
+                f"{time.time() - _t_missing:.1f}s)",
+                file=sys.stderr,
+            )
+        else:
+            print(f"[index] missing flag updates: {missing_updates}", file=sys.stderr)
 
         # サムネ生成
         if thumb_jobs:
