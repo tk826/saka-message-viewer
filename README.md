@@ -23,12 +23,17 @@ colmsgを使用して時系列で蓄積されたメッセージ・画像・動�
 - 差分取り込み（ヘッダの「更新」）と、全期間の取り込み直し（設定→「取り込み」タブ。全メンバー／メンバー個別を選択可）
 - メンバー単位の削除（設定→「初期化」タブ。メッセージ・サムネイル・お気に入り・コメントをDBから削除。保存フォルダ側のファイルは削除しないため、同名メンバーが残っていれば次回取り込みで復活する）
 
+## ダウンロード（ビルド不要）
+
+[Releases](https://github.com/tk826/saka-message-viewer/releases) から `saka-message-viewer-<版>-windows-x64.zip` をダウンロードして展開し、`message-viewer.exe` をダブルクリックする。ブラウザで `http://localhost:8000/` を開くと使える（Windows 64bit。インストール不要）。使い方は zip の中の `README.txt` を参照。
+
 ## 動作要件
 
-- ビルドに Rust（rustup）と Visual Studio Build Tools（C++）が必要。ビルド後の `message-viewer.exe` は単体で動く（SQLite・Visual C++ ランタイムは同梱）
+- Windows 64bit。配布版の `message-viewer.exe` は単体で動く（SQLite・Visual C++ ランタイムは同梱）
+- 自分でビルドする場合は Rust（rustup）と Visual Studio Build Tools（C++）が必要
 - ffmpegは任意（動画サムネイル生成用）。無くても機能上の問題はない。詳細は [docs/ffmpeg.md](docs/ffmpeg.md) を参照
 
-## セットアップ
+## セットアップ（ソースからビルドする場合）
 
 事前に Rust と Visual Studio Build Tools のインストールが必要。詳細は [docs/setup.md](docs/setup.md) を参照。
 
@@ -62,6 +67,7 @@ cd \message-viewer
 - [docs/api.md](docs/api.md) — APIエンドポイント一覧
 - [docs/data-format.md](docs/data-format.md) — データ仕様
 - [docs/api-spec.md](docs/api-spec.md) — APIとインデクサの細部の仕様
+- [docs/release.md](docs/release.md) — リリース（GitHub Releases での実行ファイルの配布）の手順
 
 ## ライセンス
 

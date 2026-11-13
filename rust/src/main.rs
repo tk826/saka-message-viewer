@@ -38,7 +38,7 @@ use std::sync::{Arc, RwLock};
 use tower_http::services::ServeDir;
 
 #[derive(Parser, Debug)]
-#[command(name = "message-viewer", about = "坂道メッセージビューア")]
+#[command(name = "message-viewer", about = "坂道メッセージビューア", version)]
 struct Cli {
     /// 設定ファイルのパス(省略時は実行ファイルと同じ場所の config-dev.json → config.json)
     #[arg(long, global = true)]

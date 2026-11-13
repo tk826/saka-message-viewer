@@ -1,0 +1,41 @@
+# タグ(v0.1.0 など)を push すると、Windows 用の exe をビルドして GitHub Releases に zip を載せる。
+# タグと rust/Cargo.toml の version が一致しなければ止まる(手順は docs/release.md)。
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Test
+        run: cargo test --manifest-path rust/Cargo.toml
+
+      - name: Build and package
+        shell: pwsh
+        run: ./script_ps1/package_release.ps1 "${{ github.ref_name }}"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true
+          body: |
+            ## ダウンロード
+
+            下の **Assets** から `saka-message-viewer-*-windows-x64.zip` をダウンロードし、展開して `message-viewer.exe` をダブルクリックしてください。
+            ブラウザで http://localhost:8000/ を開くと使えます。使い方は zip の中の `README.txt` を参照してください。
+
+            更新するときは、サーバを止めてから `message-viewer.exe` と `static\` を上書きしてください(`config.json` と `data\` はそのまま使えます)。

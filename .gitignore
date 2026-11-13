@@ -21,3 +21,6 @@ GIT.md
 
 # サーバの実行ファイル(build_rust.bat がビルドしてここへコピーする)
 /message-viewer.exe
+
+# 配布用の zip(script_ps1/package_release.ps1 が作る)
+/dist/
