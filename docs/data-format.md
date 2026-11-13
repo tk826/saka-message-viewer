@@ -6,6 +6,7 @@
   - `{メンバー}/{file}`
   - `{グループ}/{メンバー}/{file}`
 - ファイル名: `{msg_id}_{flag}_{YYYYMMDDHHMMSS}.{ext}`（flag: 0=text 1=image 2=video 3=audio）
+  - colmsg v5 以降の `{msg_id}_{flag}_{YYYYMMDDHHMMSS}_{投稿者名}.{ext}` も同じものとして扱う（投稿者名は使わない）
 - 主キーは `(member, msg_id)` の複合キー（メンバー間でmsg_idが衝突するため）
 - 画像・動画の場所は `root` からの相対パスでDBに保存する。取り込み後にフォルダ構成を変えた場合は全件走査で更新する必要がある（詳細は [docs/setup.md](setup.md) 参照）
 - 削除されたファイルはDBから消さず `missing=1` を立てる

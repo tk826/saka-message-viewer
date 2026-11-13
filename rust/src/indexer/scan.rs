@@ -64,7 +64,9 @@ fn is_yearmonth_dir(name: &str) -> bool {
     all_ascii_digits(name, 6)
 }
 
-/// ファイル名 `^(\d+)_(\d)_(\d{14})\.(\w+)$` を分解する。(msg_id文字列, flag, ts_raw, ext)
+/// ファイル名 `^(\d+)_(\d)_(\d{14})(_.+)?\.(\w+)$` を分解する。(msg_id文字列, flag, ts_raw, ext)
+/// `(_.+)?` は colmsg v5 以降が付ける投稿者名(例: `485173_0_20261110042549_金村 美玖.txt`)。
+/// 投稿者名は使わないので捨てる。
 pub fn parse_filename(name: &str) -> Option<(&str, &str, &str, &str)> {
     let (id, rest) = name.split_once('_')?;
     if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
@@ -74,8 +76,14 @@ pub fn parse_filename(name: &str) -> Option<(&str, &str, &str, &str)> {
     if !all_ascii_digits(flag, 1) {
         return None;
     }
-    let (ts, ext) = rest.split_once('.')?;
-    if !all_ascii_digits(ts, 14) || ext.is_empty() || !ext.chars().all(|c| c.is_alphanumeric() || c == '_') {
+    // 投稿者名に '.' が含まれうるので、拡張子は最後の '.' で切る
+    let (stem, ext) = rest.rsplit_once('.')?;
+    let ts = stem.get(..14)?;
+    let poster = &stem[14..];
+    if !all_ascii_digits(ts, 14) || !(poster.is_empty() || (poster.starts_with('_') && poster.len() > 1)) {
+        return None;
+    }
+    if ext.is_empty() || !ext.chars().all(|c| c.is_alphanumeric() || c == '_') {
         return None;
     }
     Some((id, flag, ts, ext))
@@ -301,6 +309,17 @@ mod tests {
         assert!(parse_filename("12_1_20260801000000").is_none()); // 拡張子なし
         assert!(parse_filename("12_1_20260801000000.tar.gz").is_none()); // \w+ に . は含まれない
         assert!(parse_filename("12_1_20260801000000.").is_none());
+        // colmsg v5 の投稿者名付き
+        assert_eq!(
+            parse_filename("485173_0_20261110042549_金村 美玖.txt"),
+            Some(("485173", "0", "20261110042549", "txt"))
+        );
+        assert_eq!(parse_filename("12_1_20260801000000_A.B.jpg"), Some(("12", "1", "20260801000000", "jpg")));
+        assert_eq!(parse_filename("12_3_20260801000000_unknown.mp4"), Some(("12", "3", "20260801000000", "mp4")));
+        assert!(parse_filename("12_1_20260801000000_.jpg").is_none()); // 投稿者名が空
+        assert!(parse_filename("12_1_20260801000000x.jpg").is_none()); // 区切りが '_' でない
+        assert!(parse_filename("12_1_2026080100000_金村.jpg").is_none()); // 13桁
+        assert!(parse_filename("12_1_20260801000000_金村").is_none()); // 拡張子なし
     }
 
     #[test]
