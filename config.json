@@ -1,0 +1,11 @@
+{
+  "root": "",
+  "data_dir": "./data",
+  "thumbs_dir": "./data/thumbs",
+  "db_path": "./data/index.db",
+  "port": 8000,
+  "thumb_size": 240,
+  "thumb_quality": 80,
+  "incremental_months": 2,
+  "auto_index_on_startup": true
+}

@@ -1,0 +1,8 @@
+# rust/ のビルド設定。
+# cargo は作業フォルダから上へ向かってこのファイルを探すため、プロジェクト直下に置く
+# (build_rust.bat はプロジェクト直下で、手動ビルドは rust\ で実行するが、どちらからでも効く)。
+
+# Visual C++ ランタイム(vcruntime140.dll)を exe に組み込み、ランタイム未導入の PC でも exe 単体で動くようにする。
+# 同梱の SQLite(C コード)も同じ設定でビルドされる。
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

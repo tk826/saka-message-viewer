@@ -1,0 +1,1659 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>坂道メッセージビューア</title>
+<style>
+/* ==========================================================================
+   坂道メッセージビューア スタイル
+   CSS変数でライト(スカイブルー)/ダークを切替
+   ========================================================================== */
+
+:root,
+:root[data-theme="light"] {
+  --bg: #dbf0f9;
+  --bg-gradient: #dbf0f9;
+  --sidebar-bg: #ffffff;
+  --sidebar-border: #d7ebf3;
+  --header-bg: #a9d7ec;
+  --header-border: #d7ebf3;
+  --text: #1b1b1b;
+  --text-sub: #6b7680;
+  --text-faint: #9aa4ad;
+  --bubble-bg: #ffffff;
+  --bubble-text: #1b1b1b;
+  --bubble-shadow: 0 1px 2px rgba(0,0,0,0.12);
+  --bubble-missing-bg: #f2e9e9;
+  --accent: #0a77ab;
+  --accent-text: #ffffff;
+  --hover: #eef8fc;
+  --selected-bg: #dbf0f9;
+  --selected-border: #0a77ab;
+  --divider: #457c98;
+  --divider-text: #ffffff;
+  --input-bg: #f0f8fb;
+  --input-border: #cde6f0;
+  --scrollbar: #bfdeeb;
+  --danger: #d84343;
+  --panel-bg: #ffffff;
+  --panel-border: #d7ebf3;
+  --overlay: rgba(0,0,0,0.6);
+  --mark-bg: #fff1a8;
+  --mark-text: #1b1b1b;
+  --favorite-star: #e8b62c;
+}
+
+:root[data-theme="dark"] {
+  --bg: #1c333e;
+  --bg-gradient: #1c333e;
+  --sidebar-bg: #1c2126;
+  --sidebar-border: #2a3138;
+  --header-bg: #14181c;
+  --header-border: #2a3138;
+  --text: #e7ebee;
+  --text-sub: #9aa7b0;
+  --text-faint: #6d7981;
+  --bubble-bg: #2a3138;
+  --bubble-text: #e7ebee;
+  --bubble-shadow: 0 1px 2px rgba(0,0,0,0.4);
+  --bubble-missing-bg: #3a2c2c;
+  --accent: #166f94;
+  --accent-text: #ffffff;
+  --hover: #212a30;
+  --selected-bg: #1c333e;
+  --selected-border: #166f94;
+  --divider: #234050;
+  --divider-text: #cfe8f2;
+  --input-bg: #242a30;
+  --input-border: #363e46;
+  --scrollbar: #3a4148;
+  --danger: #e06767;
+  --panel-bg: #1c2126;
+  --panel-border: #2a3138;
+  --overlay: rgba(0,0,0,0.75);
+  --mark-bg: #5c5220;
+  --mark-text: #ffe98a;
+  --favorite-star: #e8b62c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1c333e;
+    --bg-gradient: #1c333e;
+    --sidebar-bg: #1c2126;
+    --sidebar-border: #2a3138;
+    --header-bg: #14181c;
+    --header-border: #2a3138;
+    --text: #e7ebee;
+    --text-sub: #9aa7b0;
+    --text-faint: #6d7981;
+    --bubble-bg: #2a3138;
+    --bubble-text: #e7ebee;
+    --bubble-shadow: 0 1px 2px rgba(0,0,0,0.4);
+    --bubble-missing-bg: #3a2c2c;
+    --accent: #166f94;
+    --accent-text: #ffffff;
+    --hover: #212a30;
+    --selected-bg: #1c333e;
+    --selected-border: #166f94;
+    --divider: #234050;
+    --divider-text: #cfe8f2;
+    --input-bg: #242a30;
+    --input-border: #363e46;
+    --scrollbar: #3a4148;
+    --danger: #e06767;
+    --panel-bg: #1c2126;
+    --panel-border: #2a3138;
+    --overlay: rgba(0,0,0,0.75);
+    --mark-bg: #5c5220;
+    --mark-text: #ffe98a;
+    --favorite-star: #e8b62c;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-family, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo",
+    system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+}
+
+#app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------------- Header ---------------- */
+#header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--header-bg);
+  border-bottom: 1px solid var(--header-border);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+#appTitle {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.icon-btn {
+  background: transparent;
+  border: none;
+  font-size: 1.125rem;
+  cursor: pointer;
+  color: var(--text);
+  padding: 6px 8px;
+  border-radius: 6px;
+  line-height: 1;
+}
+.icon-btn:hover { background: var(--hover); }
+
+/* お気に入りボタンはライト/ダーク両方で視認しやすい落ち着いた黄色にする */
+#favoritesBtn { color: var(--favorite-star); }
+
+.btn {
+  background: var(--accent);
+  color: var(--accent-text);
+  border: none;
+  padding: 7px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.btn:hover { filter: brightness(1.08); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-sub);
+  font-weight: 400;
+}
+.btn-ghost:hover { background: var(--hover); }
+
+#searchBar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  flex-wrap: wrap;
+  min-width: 260px;
+}
+
+#searchInput {
+  flex: 1;
+  min-width: 140px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 0.8125rem;
+}
+
+.scope-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.75rem;
+  color: var(--text-sub);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+#searchFrom, #searchTo, #galleryFrom, #galleryTo {
+  padding: 6px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 0.75rem;
+  max-width: 140px;
+}
+
+.range-sep { color: var(--text-faint); font-size: 0.75rem; }
+
+#headerActions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+#reindexStatusBar {
+  background: var(--selected-bg);
+  color: var(--text);
+  font-size: 0.75rem;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--panel-border);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+#reindexStatusBar.is-error,
+#reindexStatusBar.is-interrupted {
+  background: var(--bubble-missing-bg);
+  color: var(--danger);
+}
+
+#reindexStatusRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+#reindexPhaseLabel {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+#reindexDetailText {
+  color: var(--text-sub);
+  white-space: nowrap;
+}
+#reindexStatusBar.is-error #reindexDetailText,
+#reindexStatusBar.is-interrupted #reindexDetailText {
+  color: var(--danger);
+}
+
+#reindexEtaText {
+  color: var(--text-faint);
+  white-space: nowrap;
+  margin-left: auto;
+}
+#reindexStatusBar.is-error #reindexEtaText,
+#reindexStatusBar.is-interrupted #reindexEtaText {
+  color: var(--danger);
+}
+
+#reindexProgressTrack {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  overflow: hidden;
+  position: relative;
+}
+
+#reindexProgressFill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+#reindexStatusBar.is-error #reindexProgressFill,
+#reindexStatusBar.is-interrupted #reindexProgressFill {
+  background: var(--danger);
+}
+
+/* 総数不明フェーズ(scanning)用の不定形プログレスバー */
+#reindexProgressTrack.indeterminate #reindexProgressFill {
+  width: 35% !important;
+  animation: reindex-indeterminate 1.3s ease-in-out infinite;
+}
+
+@keyframes reindex-indeterminate {
+  0%   { margin-left: -35%; }
+  100% { margin-left: 100%; }
+}
+
+/* ---------------- Body layout ---------------- */
+#body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  position: relative;
+}
+
+#sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--sidebar-border);
+  overflow-y: auto;
+  transition: margin-left 0.2s ease;
+}
+
+#memberListWrap { padding: 6px 0; }
+
+/* サイドバー上部の操作バー。#sidebarがスクロールコンテナなので、
+   stickyで上端に貼り付けて一覧をスクロールしても操作できるようにする。 */
+#sidebarToolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--sidebar-bg);
+  border-bottom: 1px solid var(--sidebar-border);
+}
+
+#sidebarHiddenCount {
+  font-size: 0.6875rem;
+  color: var(--text-faint);
+}
+
+.sidebar-edit-btn {
+  background: transparent;
+  border: 1px solid var(--input-border);
+  color: var(--text-sub);
+  border-radius: 12px;
+  padding: 3px 10px;
+  font-size: 0.6875rem;
+  cursor: pointer;
+  margin-left: auto;
+}
+.sidebar-edit-btn:hover { background: var(--hover); }
+.sidebar-edit-btn.active {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-color: var(--accent);
+}
+
+/* 編集モード中のみ表示される、非表示切り替えボタン */
+.member-hide-btn {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-faint);
+  font-size: 0.9375rem;
+  cursor: pointer;
+  padding: 2px 4px;
+  line-height: 1;
+  border-radius: 4px;
+}
+.member-hide-btn:hover { background: var(--hover); color: var(--text-sub); }
+
+/* 編集モード中、非表示に設定されているメンバーは薄く表示する */
+.member-item.is-hidden-member { opacity: 0.45; }
+
+/* 並び替え用のドラッグハンドル(「表示設定」中のみ表示) */
+.member-drag-handle {
+  flex-shrink: 0;
+  color: var(--text-faint);
+  font-size: 0.9375rem;
+  line-height: 1;
+  cursor: grab;
+  user-select: none;
+  margin-left: -4px;
+}
+.member-drag-handle:active { cursor: grabbing; }
+
+/* ドラッグ中の行。移動先が分かるよう半透明にする */
+.member-item.dragging {
+  opacity: 0.4;
+  background: var(--selected-bg);
+}
+
+.hint {
+  color: var(--text-faint);
+  font-size: 0.8125rem;
+  padding: 16px;
+  text-align: center;
+}
+
+.group-heading {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 12px 14px 4px;
+}
+
+.member-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+}
+.member-item:hover { background: var(--hover); }
+.member-item.selected {
+  background: var(--selected-bg);
+  border-left-color: var(--selected-border);
+}
+
+.member-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.875rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.member-meta {
+  min-width: 0;
+  flex: 1;
+}
+
+.member-name {
+  font-size: 0.875rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 3px;
+}
+
+.member-sub {
+  font-size: 0.6875rem;
+  color: var(--text-sub);
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+/* ---------------- Main ---------------- */
+#main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  background: var(--bg-gradient);
+}
+
+.empty-state {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-sub);
+  font-size: 0.875rem;
+  padding: 20px;
+  text-align: center;
+}
+
+#timelineWrap {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+#timeline {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 4% 16px;
+  scrollbar-color: var(--scrollbar) transparent;
+}
+
+.hidden { display: none !important; }
+
+.load-sentinel {
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 0.75rem;
+  padding: 8px;
+  min-height: 20px;
+}
+
+.date-sep {
+  text-align: center;
+  margin: 14px 0;
+}
+.date-sep span {
+  background: var(--divider);
+  color: var(--divider-text);
+  font-size: 0.6875rem;
+  padding: 3px 12px;
+  border-radius: 10px;
+}
+
+/* ---------------- 日付セパレータ (フローティング表示) ----------------
+   Timelineは間引き型の仮想スクロールのため、.date-sep自体にposition:stickyを
+   付けると間引きの瞬間に表示が飛ぶ。そのため独立した浮遊要素として#timelineWrap
+   に重ねて表示し、スクロール位置に応じてテキストのみ書き換える方式にする。 */
+#stickyDateSep {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  background: var(--divider);
+  color: var(--divider-text);
+  font-size: 0.6875rem;
+  padding: 3px 12px;
+  border-radius: 10px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+  pointer-events: none;
+}
+
+.msg-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 10px 0;
+  max-width: 100%;
+}
+
+.msg-row-main {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  max-width: 70%;
+  min-width: 0;
+  flex-shrink: 0;
+}
+
+.msg-bubble {
+  background: var(--bubble-bg);
+  color: var(--bubble-text);
+  border-radius: 14px;
+  border-top-left-radius: 4px;
+  box-shadow: var(--bubble-shadow);
+  padding: 8px 10px;
+  /* .msg-bubble-row(flex)の子になったため、幅は内容に応じて伸縮する。
+     min-width:0でテキストの折り返しがflexの最小幅制約に邪魔されないようにする */
+  min-width: 0;
+  word-break: break-word;
+  white-space: pre-wrap;
+  font-size: 0.9062rem;
+  line-height: 1.5;
+}
+
+.msg-bubble.missing-body {
+  background: var(--bubble-missing-bg);
+}
+
+.msg-time {
+  font-size: 0.6562rem;
+  color: var(--text-sub);
+  margin-top: 3px;
+  padding-left: 4px;
+}
+
+.msg-media {
+  margin-bottom: 6px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(0,0,0,0.06);
+  min-height: 60px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.msg-media img.thumb-img {
+  max-width: 100%;
+  max-height: 320px;
+  display: block;
+  cursor: pointer;
+  object-fit: contain;
+}
+
+.msg-media video {
+  max-width: 100%;
+  max-height: 360px;
+  min-width: 220px;
+  display: block;
+  background: #000;
+}
+
+.media-placeholder {
+  width: 220px;
+  height: 140px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+  font-size: 0.75rem;
+  background: var(--input-bg);
+}
+
+.play-badge {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.125rem;
+  pointer-events: none;
+}
+
+.audio-tag {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  font-size: 0.6875rem;
+  padding: 2px 6px;
+  border-radius: 8px;
+  pointer-events: none;
+}
+
+.media-expand-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  font-size: 0.9375rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 1;
+  /* ネイティブcontrolsと同様、マウスが乗っている間だけ表示する。 */
+  opacity: 0;
+  transition: opacity 0.15s;
+  pointer-events: none;
+}
+.msg-media:hover .media-expand-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+.media-expand-btn:hover {
+  background: rgba(0,0,0,0.75);
+}
+
+.missing-media {
+  width: 220px;
+  height: 100px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  background: var(--bubble-missing-bg);
+  color: var(--danger);
+  font-size: 0.75rem;
+  opacity: 0.85;
+}
+
+.missing-flag {
+  color: var(--danger);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+/* ---------------- メッセージ行アクション (お気に入り/パスコピー) ---------------- */
+/* バブルとアクション群を横並びにし、バブルのすぐ右にボタンを出す。
+   アクションはflex-shrink:0で幅固定、バブルは残り幅の中で内容に応じて伸縮する。 */
+.msg-bubble-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.msg-row-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0;
+  pointer-events: none;
+  /* 非表示への切り替えだけ遅延させ、バブル→ボタンへのマウス移動中に消えないようにする。
+     表示は遅延なし、非表示は0.2s待ってから、という非対称にする。 */
+  transition: opacity 0.15s ease 0.2s;
+}
+/* ホバー領域はバブル+アクションのラッパー全体にし、隙間を移動する間も維持されるようにする */
+.msg-bubble-row:hover .msg-row-actions,
+.msg-row-actions:hover,
+.msg-row-actions.has-favorite {
+  opacity: 1;
+  pointer-events: auto;
+  transition-delay: 0s;
+}
+
+.msg-action-btn {
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  color: var(--text-sub);
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--bubble-shadow);
+  line-height: 1;
+}
+.msg-action-btn:hover { background: var(--hover); }
+.msg-action-btn.fav-btn.is-favorited { color: var(--favorite-star); }
+
+@media (hover: none) {
+  /* タッチデバイスはホバーできないため、アクションボタンを常時表示にする */
+  .msg-row-actions { opacity: 1; pointer-events: auto; }
+}
+
+#scrollBottomBtn {
+  position: absolute;
+  right: 20px;
+  bottom: 20px;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.125rem;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+}
+
+/* ---------------- Panels (calendar / search) ---------------- */
+.panel {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  left: 12px;
+  max-width: 520px;
+  margin-left: auto;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.2);
+  z-index: 20;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--panel-border);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.panel-body {
+  overflow-y: auto;
+  padding: 10px 12px;
+}
+
+.calendar-year {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-sub);
+  margin: 10px 0 4px;
+}
+
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.calendar-month {
+  background: var(--input-bg);
+  border-radius: 6px;
+  padding: 6px 4px;
+  text-align: center;
+  cursor: pointer;
+  font-size: 0.75rem;
+}
+.calendar-month:hover { background: var(--hover); outline: 1px solid var(--selected-border); }
+.calendar-month .cm-label { font-weight: 600; }
+.calendar-month .cm-count { color: var(--text-sub); font-size: 0.6562rem; }
+
+.calendar-back {
+  padding: 2px 8px;
+  margin-right: 6px;
+  font-size: 0.875rem;
+}
+
+.calendar-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  margin-bottom: 4px;
+}
+.calendar-weekdays span {
+  text-align: center;
+  font-size: 0.6875rem;
+  color: var(--text-sub);
+}
+
+.calendar-daygrid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+
+.calendar-day {
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  font-size: 0.75rem;
+}
+.calendar-day.empty { visibility: hidden; }
+.calendar-day.has-messages {
+  background: var(--input-bg);
+  cursor: pointer;
+}
+.calendar-day.has-messages:hover { background: var(--hover); outline: 1px solid var(--selected-border); }
+.calendar-day.no-messages { color: var(--text-sub); opacity: 0.4; }
+
+.search-result-item {
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--panel-border);
+  cursor: pointer;
+  font-size: 0.8125rem;
+}
+.search-result-item:hover { background: var(--hover); }
+.search-result-item .sr-meta {
+  font-size: 0.6875rem;
+  color: var(--text-sub);
+  margin-bottom: 3px;
+  display: flex;
+  gap: 8px;
+}
+/* スニペットはサーバ側で抜粋済みだが、念のため表示側でも行数を抑える */
+.search-result-item .sr-snippet {
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+  line-clamp: 6;
+  overflow: hidden;
+}
+.search-result-item .sr-snippet mark {
+  background: var(--mark-bg);
+  color: var(--mark-text);
+  padding: 0 1px;
+  border-radius: 2px;
+}
+
+/* 検索結果の続きを読み込むボタン */
+.search-more {
+  display: flex;
+  justify-content: center;
+  padding: 10px 6px;
+}
+.search-more .btn { font-size: 0.75rem; }
+
+/* 検索結果からジャンプしたとき、タイムライン本文中の検索語を強調する */
+.msg-body mark {
+  background: var(--mark-bg);
+  color: var(--mark-text);
+  padding: 0 1px;
+  border-radius: 2px;
+}
+
+/* ---------------- お気に入り一覧パネル ---------------- */
+.favorite-item {
+  display: flex;
+  gap: 8px;
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--panel-border);
+  cursor: pointer;
+  font-size: 0.8125rem;
+  align-items: center;
+}
+.favorite-item:hover { background: var(--hover); }
+
+.favorite-thumb {
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--input-bg);
+}
+
+.favorite-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.favorite-main .fav-meta {
+  font-size: 0.6875rem;
+  color: var(--text-sub);
+  margin-bottom: 3px;
+  display: flex;
+  gap: 8px;
+}
+
+.favorite-main .fav-snippet {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.favorite-unfav-btn {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: #e8b62c;
+  font-size: 1.125rem;
+  cursor: pointer;
+  padding: 4px;
+  line-height: 1;
+}
+.favorite-unfav-btn:hover { background: var(--hover); border-radius: 50%; }
+
+/* ---------------- コメント編集UI (タイムライン常時表示 / お気に入り一覧共通) ---------------- */
+.comment-editor {
+  margin-top: 4px;
+}
+
+.comment-text {
+  font-size: 0.75rem;
+  color: var(--text-sub);
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  cursor: text;
+}
+.comment-text:hover { border-color: var(--accent); }
+
+.comment-add-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-faint);
+  font-size: 0.6875rem;
+  cursor: pointer;
+  padding: 2px 0;
+}
+.comment-add-btn:hover { color: var(--text-sub); text-decoration: underline; }
+
+.comment-input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--text);
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  resize: vertical;
+}
+
+.comment-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.comment-save-btn,
+.comment-cancel-btn {
+  font-size: 0.6875rem;
+  padding: 3px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  color: var(--text);
+}
+.comment-save-btn {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-color: var(--accent);
+}
+.comment-save-btn:disabled { opacity: 0.6; cursor: default; }
+
+/* タイムライン上の常時表示コメント欄: バブル列の右側、残りの余白全体を使う。
+   .msg-rowの折り返し順で.msg-row-mainの下に回り込まないよう、幅が
+   足りない場合の最終手段としてのみ折り返す(min-width指定で極端な圧縮を防ぐ)。 */
+.msg-row-comment {
+  flex: 1;
+  min-width: 120px;
+  margin-top: 0;
+  align-self: flex-start;
+}
+.msg-row-comment .comment-add-btn {
+  opacity: 0.5;
+}
+.msg-row-comment .comment-add-btn:hover {
+  opacity: 1;
+}
+
+/* ---------------- メディアギャラリーパネル ---------------- */
+#galleryPanel {
+  max-width: 720px;
+}
+
+.gallery-filter-row {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--panel-border);
+  flex-wrap: wrap;
+}
+
+.gallery-filter-btn {
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  color: var(--text-sub);
+  border-radius: 14px;
+  padding: 4px 12px;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.gallery-date-row {
+  align-items: center;
+}
+
+.gallery-date-clear {
+  font-size: 0.875rem;
+  padding: 2px 8px;
+  line-height: 1;
+}
+
+.gallery-filter-btn.active {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-color: var(--accent);
+}
+
+#galleryGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.gallery-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+}
+
+.gallery-item-media {
+  position: relative;
+  aspect-ratio: 1;
+  background: var(--input-bg);
+  flex-shrink: 0;
+}
+
+.gallery-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* サムネイルの無い動画/音声用のプレースホルダ（両テーマで視認できるようCSS変数で配色） */
+.gallery-item-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  background: var(--hover);
+  color: var(--text-sub);
+}
+.gallery-item-placeholder .gallery-placeholder-icon {
+  font-size: 1.75rem;
+  line-height: 1;
+}
+.gallery-item-placeholder .gallery-placeholder-label {
+  font-size: 0.6875rem;
+}
+
+.gallery-item .gallery-kind-badge {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  font-size: 0.625rem;
+  padding: 1px 5px;
+  border-radius: 6px;
+  pointer-events: none;
+}
+
+.gallery-item .gallery-jump-btn {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  border: none;
+  border-radius: 50%;
+  width: 22px;
+  height: 22px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.gallery-item .gallery-jump-btn:hover { background: rgba(0,0,0,0.8); }
+
+.gallery-item-meta {
+  padding: 5px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.gallery-item-time {
+  font-size: 0.6875rem;
+  color: var(--text-sub);
+  white-space: nowrap;
+}
+
+.gallery-item-snippet {
+  font-size: 0.75rem;
+  color: var(--text);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+/* ---------------- Lightbox ---------------- */
+#lightbox {
+  position: fixed;
+  inset: 0;
+  background: var(--overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+#lightboxClose {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  color: #fff;
+  font-size: 1.75rem;
+}
+
+#lightboxContent img, #lightboxContent video {
+  max-width: 92vw;
+  max-height: 90vh;
+  display: block;
+}
+
+/* ---------------- Settings modal ---------------- */
+#settingsModal {
+  position: fixed;
+  inset: 0;
+  background: var(--overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 110;
+}
+
+#settingsModalBox {
+  width: 92vw;
+  max-width: 460px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-desc {
+  font-size: 0.8125rem;
+  color: var(--text-sub);
+  margin: 0 0 10px;
+}
+
+.settings-label {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-sub);
+  margin-bottom: 4px;
+}
+
+#settingsRootInput {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--panel-border);
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 0.8125rem;
+}
+
+.settings-error {
+  color: var(--danger);
+  font-size: 0.75rem;
+  margin-top: 8px;
+}
+
+.settings-actions {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.settings-label-spaced {
+  margin-top: 14px;
+}
+
+.settings-section {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--panel-border);
+}
+
+.settings-section:first-of-type {
+  margin-top: 12px;
+  padding-top: 0;
+  border-top: none;
+}
+
+.settings-section-title {
+  margin: 0 0 10px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-sub);
+  letter-spacing: 0.02em;
+}
+
+.settings-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--text-sub);
+  cursor: pointer;
+}
+
+.settings-checkbox-label input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+}
+
+.settings-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.settings-tab {
+  flex: 1;
+  padding: 9px 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-sub);
+  font-size: 0.75rem;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+.settings-tab:hover { color: var(--text); }
+.settings-tab.active {
+  color: var(--text);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+.settings-tab:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.settings-tab:disabled:hover { color: var(--text-sub); }
+
+.settings-tab-panel.hidden { display: none; }
+
+/* ニックネーム入力・テーマ選択・フォント選択の見た目を統一する */
+#settingsNickname,
+#settingsTheme,
+#settingsFontFamily {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--panel-border);
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 0.8125rem;
+}
+
+#settingsFontSize {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.btn-danger {
+  background: var(--danger);
+  color: #fff;
+}
+
+/* ---------------- Toast ---------------- */
+#toast {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #333;
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 0.8125rem;
+  z-index: 200;
+  box-shadow: 0 3px 12px rgba(0,0,0,0.3);
+}
+#toast.error { background: var(--danger); }
+
+/* ---------------- Responsive ---------------- */
+@media (max-width: 760px) {
+  #appTitle { display: none; }
+  /* 横に並べるだけの余白が無いため、コメント欄をバブル列の下に回り込ませる */
+  .msg-row { flex-direction: column; max-width: 88%; }
+  .msg-row-main { max-width: 100%; }
+  .msg-row-comment { width: 100%; }
+  .panel { max-width: none; }
+  #galleryPanel { max-width: none; }
+  #searchFrom, #searchTo { max-width: 110px; }
+}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <header id="header">
+    <h1 id="appTitle">坂道メッセージビューア</h1>
+
+    <div id="searchBar">
+      <input type="text" id="searchInput" placeholder='検索 (空白でAND、"..."でフレーズ、-語で除外)' autocomplete="off" title='空白区切りはAND検索。"..."で囲むとフレーズ、先頭に-を付けるとその語を除外。'>
+      <label class="scope-toggle">
+        <input type="checkbox" id="searchScopeAll">
+        <span>全メンバー</span>
+      </label>
+      <input type="date" id="searchFrom" title="開始日">
+      <span class="range-sep">〜</span>
+      <input type="date" id="searchTo" title="終了日">
+      <button id="searchBtn" class="btn">検索</button>
+    </div>
+
+    <div id="headerActions">
+      <button id="calendarBtn" class="icon-btn" title="日付ジャンプ">&#128197;</button>
+      <button id="favoritesBtn" class="icon-btn" title="お気に入り">&#9733;</button>
+      <button id="galleryBtn" class="icon-btn" title="メディアギャラリー">&#128444;&#65039;</button>
+      <button id="reindexBtn" class="btn">更新</button>
+      <button id="settingsBtn" class="icon-btn" title="設定">&#9881;&#65039;</button>
+    </div>
+  </header>
+
+  <div id="reindexStatusBar" class="hidden">
+    <div id="reindexStatusRow">
+      <span id="reindexPhaseLabel"></span>
+      <span id="reindexDetailText"></span>
+      <span id="reindexEtaText"></span>
+    </div>
+    <div id="reindexProgressTrack">
+      <div id="reindexProgressFill"></div>
+    </div>
+  </div>
+
+  <div id="body">
+    <aside id="sidebar">
+      <div id="sidebarToolbar">
+        <span id="sidebarHiddenCount" class="hidden"></span>
+        <button id="memberEditBtn" class="sidebar-edit-btn" title="表示するメンバーを選ぶ">表示設定</button>
+      </div>
+      <div id="memberListWrap">
+        <div id="memberListLoading" class="hint">読み込み中...</div>
+        <div id="memberList"></div>
+      </div>
+    </aside>
+
+    <main id="main">
+      <div id="calendarPanel" class="panel hidden">
+        <div class="panel-header">
+          <span>
+            <button id="calendarBackBtn" class="btn btn-ghost calendar-back hidden" title="月一覧に戻る">&#8592;</button>
+            <span id="calendarTitle">日付ジャンプ</span>
+          </span>
+          <button class="btn btn-ghost calendar-close" title="閉じる">&times;</button>
+        </div>
+        <div id="calendarBody" class="panel-body"></div>
+      </div>
+
+      <div id="searchPanel" class="panel hidden">
+        <div class="panel-header">
+          <span id="searchResultTitle">検索結果</span>
+          <button class="btn btn-ghost search-close" title="閉じる">&times;</button>
+        </div>
+        <div id="searchResultBody" class="panel-body"></div>
+      </div>
+
+      <div id="favoritesPanel" class="panel hidden">
+        <div class="panel-header">
+          <span id="favoritesTitle">お気に入り</span>
+          <button class="btn btn-ghost favorites-close" title="閉じる">&times;</button>
+        </div>
+        <div id="favoritesBody" class="panel-body"></div>
+      </div>
+
+      <div id="galleryPanel" class="panel hidden">
+        <div class="panel-header">
+          <span id="galleryTitle">メディアギャラリー</span>
+          <button class="btn btn-ghost gallery-close" title="閉じる">&times;</button>
+        </div>
+        <div class="gallery-filter-row">
+          <button class="gallery-filter-btn active" data-kind="">すべて</button>
+          <button class="gallery-filter-btn" data-kind="image">画像</button>
+          <button class="gallery-filter-btn" data-kind="video">動画</button>
+          <button class="gallery-filter-btn" data-kind="audio">音声</button>
+        </div>
+        <div class="gallery-filter-row gallery-date-row">
+          <input type="date" id="galleryFrom" title="開始日">
+          <span class="range-sep">〜</span>
+          <input type="date" id="galleryTo" title="終了日">
+          <button id="galleryDateClearBtn" class="btn btn-ghost gallery-date-clear hidden" title="日付絞り込みを解除">&times;</button>
+        </div>
+        <div id="galleryBody" class="panel-body">
+          <div id="galleryGrid"></div>
+          <div id="galleryLoadSentinel" class="load-sentinel hidden"></div>
+        </div>
+      </div>
+
+      <div id="timelineWrap">
+        <div id="emptyState" class="empty-state">
+          <p>左のメンバー一覧から会話を選択してください。</p>
+        </div>
+        <div id="stickyDateSep" class="hidden"></div>
+        <div id="timeline" class="hidden"></div>
+        <div id="scrollBottomBtn" class="hidden" title="最新へ">&#8595;</div>
+      </div>
+    </main>
+  </div>
+
+  <div id="lightbox" class="hidden">
+    <button id="lightboxClose" class="icon-btn">&times;</button>
+    <div id="lightboxContent"></div>
+  </div>
+
+  <div id="settingsModal" class="hidden">
+    <div id="settingsModalBox">
+      <div class="panel-header">
+        <span>設定</span>
+        <button id="settingsCloseBtn" class="btn btn-ghost" title="閉じる">&times;</button>
+      </div>
+      <div id="settingsTabs" class="settings-tabs">
+        <button class="settings-tab active" data-tab="folder">保存先フォルダ</button>
+        <button class="settings-tab" data-tab="display">表示設定</button>
+        <button class="settings-tab" data-tab="reindex">取り込み</button>
+        <button class="settings-tab" data-tab="danger">初期化</button>
+      </div>
+      <div id="settingsModalBody" class="panel-body">
+        <div id="settingsTabFolder" class="settings-tab-panel">
+          <p class="settings-desc">メッセージが保存されているフォルダを指定してください。</p>
+          <label for="settingsRootInput" class="settings-label">保存先フォルダ（絶対パス）</label>
+          <input type="text" id="settingsRootInput" placeholder="例: C:\hinatazaka_messages">
+          <div id="settingsError" class="settings-error hidden"></div>
+          <div class="settings-actions">
+            <button id="settingsSaveBtn" class="btn">保存して取り込み開始</button>
+          </div>
+        </div>
+
+        <div id="settingsTabDisplay" class="settings-tab-panel hidden">
+          <p class="settings-desc">表示設定（この端末のブラウザに保存されます）</p>
+
+          <section class="settings-section">
+            <h3 class="settings-section-title">テーマ・文字</h3>
+
+            <label for="settingsTheme" class="settings-label">テーマ</label>
+            <select id="settingsTheme">
+              <option value="">システム設定に従う</option>
+              <option value="light">ライト</option>
+              <option value="dark">ダーク</option>
+            </select>
+
+            <label for="settingsFontFamily" class="settings-label settings-label-spaced">フォント</label>
+            <select id="settingsFontFamily">
+              <option value="">既定（ゴシック体）</option>
+              <option value="serif">明朝体</option>
+              <option value="'UD Digital KyoKasho', 'BIZ UDGothic', sans-serif">UDフォント（読みやすさ重視）</option>
+              <option value="monospace">等幅</option>
+            </select>
+
+            <label for="settingsFontSize" class="settings-label settings-label-spaced">文字サイズ: <span id="settingsFontSizeValue">100%</span></label>
+            <input type="range" id="settingsFontSize" min="80" max="160" step="10" value="100">
+          </section>
+
+          <section class="settings-section">
+            <h3 class="settings-section-title">メッセージ表示</h3>
+
+            <label for="settingsNickname" class="settings-label">ニックネーム（本文中の %%% または ％％％ と置換されます）</label>
+            <input type="text" id="settingsNickname" placeholder="ユーザー">
+          </section>
+
+          <section class="settings-section">
+            <h3 class="settings-section-title">動画・音声</h3>
+
+            <label class="settings-checkbox-label">
+              <input type="checkbox" id="settingsVolumeBoost">
+              音量ブースター（動画・音声の音量を2倍にする）
+            </label>
+          </section>
+        </div>
+
+        <div id="settingsTabReindex" class="settings-tab-panel hidden">
+          <p class="settings-desc">
+            ヘッダの「更新」は直近2ヶ月分のみを対象にします。保存フォルダの構成を変えた場合や、
+            古いメッセージが取り込まれていない場合は、ここから全期間を取り込み直してください。
+            未生成のサムネイルもあわせて作成されます（既存のサムネイル・お気に入りは保持されます）。
+          </p>
+
+          <label for="settingsReindexMember" class="settings-label">対象</label>
+          <select id="settingsReindexMember">
+            <option value="">全メンバー</option>
+          </select>
+
+          <div id="settingsReindexError" class="settings-error hidden"></div>
+          <div class="settings-actions">
+            <button id="settingsReindexBtn" class="btn">全期間を取り込む</button>
+          </div>
+
+          <section class="settings-section">
+            <h3 class="settings-section-title">動画サムネイル（ffmpeg）</h3>
+            <p id="settingsFfmpegStatus" class="settings-desc"></p>
+            <div id="settingsFfmpegHelp" class="settings-desc hidden">
+              動画のサムネイルには ffmpeg が必要です（画像のサムネイルは ffmpeg なしで作成されます）。
+              <a href="https://www.gyan.dev/ffmpeg/builds/" target="_blank" rel="noopener">gyan.dev</a>
+              から essentials ビルドをダウンロードし、zip内の <code>bin\ffmpeg.exe</code> を
+              message-viewer フォルダ（または <code>bin\</code> フォルダ）に置いてサーバーを再起動してから、
+              上の「全期間を取り込む」を実行してください。
+            </div>
+          </section>
+        </div>
+
+        <div id="settingsTabDanger" class="settings-tab-panel hidden">
+          <section class="settings-section">
+            <h3 class="settings-section-title">メンバー削除</h3>
+            <p class="settings-desc">
+              指定したメンバーのメッセージ・サムネイル・お気に入り・コメントをDBから削除します。元に戻せません。
+              保存フォルダ側のファイルには触れないため、同名メンバーがまだ保存フォルダにあれば次回の取り込みで再度取り込まれます。
+            </p>
+            <label for="settingsDeleteMember" class="settings-label">対象メンバー</label>
+            <select id="settingsDeleteMember"></select>
+            <div id="settingsDeleteMemberError" class="settings-error hidden"></div>
+            <div class="settings-actions">
+              <button id="settingsDeleteMemberBtn" class="btn btn-danger">このメンバーを削除する</button>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <h3 class="settings-section-title">全データ初期化</h3>
+            <p class="settings-desc">DB・サムネイル・保存先フォルダ設定をすべて削除し、初回起動時の状態に戻します。元に戻せません。</p>
+            <div id="settingsResetError" class="settings-error hidden"></div>
+            <div class="settings-actions">
+              <button id="settingsResetBtn" class="btn btn-danger">初期化する</button>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="hidden"></div>
+</div>
+
+<script type="module" src="/static/js/app.js"></script>
+
+</body>
+</html>
