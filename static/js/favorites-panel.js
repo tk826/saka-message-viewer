@@ -59,41 +59,54 @@ export const FavoritesPanel = {
     try {
       const data = await fetchJson(`/api/favorites?limit=${this.PAGE_SIZE}&member=${encodeURIComponent(Sidebar.selectedMember)}`);
       body.innerHTML = "";
-      const favs = data.favorites || [];
-      if (favs.length === 0) {
-        body.innerHTML = `<div class="hint">このメンバーのお気に入りはまだありません</div>`;
-        this.hasMore = false;
-        return;
-      }
-      for (const f of favs) body.appendChild(this.buildItem(f));
-      this.oldestCreatedAt = data.next_before;
-      this.oldestRowid = data.next_before_rowid;
-      if (favs.length < this.PAGE_SIZE) this.hasMore = false;
+      this.appendPage(data);
     } catch (e) {
       console.error(e);
       body.innerHTML = `<div class="hint">読み込みに失敗しました: ${escapeHtml(e.message)}</div>`;
+      return;
     }
+    this.showEmptyHintIfDone();
+    this.fillIfShort();
+  },
+
+  // 1ページ分を末尾に足す。続きの有無は件数ではなく has_more で判断する
+  // (元のメッセージが消えたお気に入りはサーバ側で除外されるため、続きがあっても件数が PAGE_SIZE に満たないことがある)
+  appendPage(data) {
+    const body = qs("#favoritesBody");
+    for (const f of data.favorites || []) body.appendChild(this.buildItem(f));
+    this.oldestCreatedAt = data.next_before;
+    this.oldestRowid = data.next_before_rowid;
+    this.hasMore = data.has_more === true && data.next_before != null;
+  },
+
+  showEmptyHintIfDone() {
+    const body = qs("#favoritesBody");
+    if (!this.hasMore && body.children.length === 0) {
+      body.innerHTML = `<div class="hint">このメンバーのお気に入りはまだありません</div>`;
+    }
+  },
+
+  // 表示が少なくてスクロールできないと続きを読めないため、パネルが埋まるまで続けて読む
+  fillIfShort() {
+    if (this.hasMore) this.onScroll();
   },
 
   async loadMore() {
     if (this.loading || !this.hasMore || this.oldestCreatedAt == null) return;
     this.loading = true;
+    let ok = false;
     try {
       const data = await fetchJson(`/api/favorites?limit=${this.PAGE_SIZE}&before=${this.oldestCreatedAt}&before_rowid=${this.oldestRowid}&member=${encodeURIComponent(Sidebar.selectedMember)}`);
-      const favs = data.favorites || [];
-      if (favs.length === 0) {
-        this.hasMore = false;
-        return;
-      }
-      const body = qs("#favoritesBody");
-      for (const f of favs) body.appendChild(this.buildItem(f));
-      this.oldestCreatedAt = data.next_before;
-      this.oldestRowid = data.next_before_rowid;
-      if (favs.length < this.PAGE_SIZE) this.hasMore = false;
+      this.appendPage(data);
+      ok = true;
     } catch (e) {
       console.error(e);
     } finally {
       this.loading = false;
+    }
+    if (ok) {
+      this.showEmptyHintIfDone();
+      this.fillIfShort();
     }
   },
 

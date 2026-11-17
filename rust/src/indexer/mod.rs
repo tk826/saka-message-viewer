@@ -97,6 +97,8 @@ struct NewRow {
     ts: i64,
     ts_raw: String,
     body: Option<String>,
+    /// 本文ファイルを一時的に読めなかった(ロック中など)。このときは保存済みの本文を消さずに残す
+    body_unreadable: bool,
     media: Option<String>,
     kind: &'static str,
     flag: i64,
@@ -110,21 +112,22 @@ pub fn parse_ts_utc(ts_raw: &str) -> Option<i64> {
         d.year() >= 1
     })?;
     let t = date.and_hms_opt(n(8, 10)?, n(10, 12)?, n(12, 14)?)?;
-    Some(t.and_utc().timestamp())
+    // 表示は JST(+9h)。JST で 9999 年を超える日時は SQLite の日付関数が扱えない(カレンダーが壊れる)ため不正とする
+    Some(t.and_utc().timestamp()).filter(|&ts| ts + 9 * 3600 <= crate::timeutil::MAX_TS_JST)
 }
 
 /// テキスト本文を UTF-8 で読み、改行を `\n` に揃える(\r\n, \r → \n)。
-/// UTF-8 として不正なら None(警告のみ)。
-fn read_body(path: &Path) -> Option<String> {
+/// UTF-8 として不正なら Ok(None)(警告のみ)。読み込み自体の失敗(別プロセスがロック中など)は Err。
+fn read_body(path: &Path) -> Result<Option<String>, ()> {
     match std::fs::read(path).map(String::from_utf8) {
-        Ok(Ok(s)) => Some(if s.contains('\r') { s.replace("\r\n", "\n").replace('\r', "\n") } else { s }),
+        Ok(Ok(s)) => Ok(Some(if s.contains('\r') { s.replace("\r\n", "\n").replace('\r', "\n") } else { s })),
         Ok(Err(e)) => {
             logln!("[warn] failed to read {}: {e}", path.display());
-            None
+            Ok(None)
         }
         Err(e) => {
-            logln!("[warn] failed to read {}: {e}", path.display());
-            None
+            logln!("[warn] failed to read {} (keeping the stored body): {e}", path.display());
+            Err(())
         }
     }
 }
@@ -144,13 +147,15 @@ fn build_row(member: &str, msg_id: i64, files: &[FileEntry]) -> Result<NewRow, S
     let primary = media.first().copied().or(txt).expect("files is not empty");
     let ts = parse_ts_utc(&primary.ts_raw)
         .ok_or_else(|| format!("invalid timestamp in file name: {}", primary.rel_path))?;
+    let body = txt.map(|t| read_body(&t.path));
     Ok(NewRow {
         member: member.to_string(),
         group: files.iter().find_map(|f| f.group.clone().filter(|g| !g.is_empty())),
         msg_id,
         ts,
         ts_raw: primary.ts_raw.clone(),
-        body: txt.and_then(|t| read_body(&t.path)),
+        body: body.clone().and_then(|b| b.ok().flatten()),
+        body_unreadable: body.is_some_and(|b| b.is_err()),
         media: media.first().map(|f| f.rel_path.clone()),
         kind: FLAG_TO_KIND.get(primary.flag as usize).copied().unwrap_or("text"),
         flag: primary.flag,
@@ -230,10 +235,16 @@ fn rebuild_db(db_path: &Path) -> Result<(), IndexError> {
     for suffix in ["", "-wal", "-shm"] {
         let mut p = db_path.as_os_str().to_owned();
         p.push(suffix);
-        match std::fs::remove_file(PathBuf::from(p)) {
+        let p = PathBuf::from(p);
+        match std::fs::remove_file(&p) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(IndexError::Failed(e.to_string())),
+            Err(e) => {
+                return Err(IndexError::Failed(format!(
+                    "{} を削除できませんでした(他のプロセスが開いている可能性があります): {e}",
+                    p.display()
+                )));
+            }
         }
     }
     Ok(())
@@ -317,6 +328,7 @@ fn kw(pairs: &[(&str, Value)]) -> Map<String, Value> {
 }
 
 struct Existing {
+    group: Option<String>,
     body: Option<String>,
     media: Option<String>,
     kind: String,
@@ -402,21 +414,25 @@ fn run_locked(
     conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()))?;
 
     // missing 判定: 走査範囲内の既存行のうち、今回見つからなかったものを missing=1(見つかれば 0 に戻す)。
-    // 範囲の年月は ts(UTC epoch)+9h の JST で求める
+    // 走査範囲(差分取り込みの年月)は、月フォルダ名またはファイル名の日時(UTC)の年月で決まる。
+    // 一方、月フォルダが UTC と JST(ts+9h)のどちらで分かれているかは分からないため、両方の年月が範囲内の行だけを
+    // 判定する。片方だけで判定すると、月初 0〜9 時(JST)のメッセージが走査されていないのに missing=1 になる。
+    // 見つかった行は取り込み時に missing=0 に戻しているので、範囲外として飛ばしても見落としは起きない
     report("missing_check", Map::new());
     let mut missing_updates = 0u64;
     conn.execute_batch("BEGIN")?;
     for member in &scope.members {
         let months = &scope.member_yearmonths[member];
-        let rows: Vec<(i64, i64, i64)> = {
-            let mut stmt = conn.prepare_cached("SELECT msg_id, ts, missing FROM messages WHERE member=?")?;
-            let it = stmt.query_map([member], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        let rows: Vec<(i64, i64, String, i64)> = {
+            let mut stmt = conn.prepare_cached("SELECT msg_id, ts, ts_raw, missing FROM messages WHERE member=?")?;
+            let it = stmt.query_map([member], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
             it.collect::<rusqlite::Result<_>>()?
         };
-        for (msg_id, ts, missing) in rows {
+        for (msg_id, ts, ts_raw, missing) in rows {
             if let Some(months) = months {
                 let jst = chrono::DateTime::from_timestamp(ts + 9 * 3600, 0).map(|d| d.format("%Y%m").to_string());
-                if !jst.is_some_and(|ym| months.contains(&ym)) {
+                let utc = ts_raw.get(..6);
+                if !(jst.is_some_and(|ym| months.contains(&ym)) && utc.is_some_and(|ym| months.contains(ym))) {
                     continue;
                 }
             }
@@ -442,6 +458,7 @@ fn run_locked(
         logln!("[index] generating {n} thumbnails");
         let console = Mutex::new(ConsoleReporter::new("thumbs"));
         let state = Mutex::new((0u64, 0u64)); // (done, ok)
+        let failed: Mutex<Vec<String>> = Mutex::new(Vec::new()); // 作れなかったサムネの thumbs_dir 相対パス
         let all = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
         parallel_for(&thumb_jobs, all, |job| {
             // 1枚の失敗(デコーダの panic を含む)で残りのサムネ生成や取り込み全体を止めない
@@ -449,6 +466,11 @@ fn run_locked(
                 .unwrap_or_else(|payload| Err(format!("internal error: {}", panic_message(&*payload))));
             if let Err(e) = &res {
                 logln!("[warn] thumb failed for {}: {e}", job.src.display());
+                thumbs::mark_failed(job);
+                if let Ok(rel) = job.dst.strip_prefix(&cfg.thumbs_dir) {
+                    let rel = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
+                    failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(rel);
+                }
             }
             let (d, _ok) = {
                 let mut s = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -459,11 +481,21 @@ fn run_locked(
                 *s
             };
             console.lock().unwrap().maybe_report(d, n);
-            if d % 200 == 0 {
+            if d % 200 == 0 || d == n {
                 report("thumbnailing", kw(&[("done", json!(d)), ("total", json!(n))]));
             }
         });
         summary.thumb_count = state.into_inner().unwrap().1;
+
+        // 作れなかったサムネは thumb を空にする(存在しないサムネを指したままにしない。画面は元のメディアを表示する)
+        let failed = failed.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !failed.is_empty() {
+            conn.execute_batch("BEGIN")?;
+            for rel in &failed {
+                conn.prepare_cached("UPDATE messages SET thumb=NULL WHERE thumb=?")?.execute([rel])?;
+            }
+            conn.execute_batch("COMMIT")?;
+        }
     }
     Ok(())
 }
@@ -483,7 +515,7 @@ fn upsert_one(
     // 差分取り込みでも DB の本文をほぼ全部読んでいた)
     let prev: Option<Existing> = conn
         .prepare_cached(
-            "SELECT body, media, kind, flag, thumb, missing, ts_raw FROM messages WHERE member=? AND msg_id=?",
+            "SELECT body, media, kind, flag, thumb, missing, ts_raw, group_ FROM messages WHERE member=? AND msg_id=?",
         )?
         .query_row(params![row.member, row.msg_id], |r| {
             Ok(Existing {
@@ -494,10 +526,13 @@ fn upsert_one(
                 thumb: r.get(4)?,
                 missing: r.get(5)?,
                 ts_raw: r.get(6)?,
+                group: r.get(7)?,
             })
         })
         .optional()?;
     let mut thumb_rel: Option<String> = prev.as_ref().and_then(|p| p.thumb.clone());
+    // 前回作れなかったサムネ(壊れた画像など)。thumb を空にして、作り直さない
+    let mut thumb_failed = false;
 
     // サムネ元: jpg(画像)。無ければ ffmpeg があるときだけ動画(flag=2 の mp4。音声も mp4 を使うため flag で絞る)
     let jpg = files.iter().find(|f| f.ext == "jpg");
@@ -506,14 +541,22 @@ fn upsert_one(
         let rel = thumb_rel_path(&row.member, row.msg_id);
         let abs = cfg.thumbs_dir.join(&rel);
         // 既にあるサムネは作り直さない(後から ffmpeg を入れても、未生成の動画サムネだけが積まれる)
-        if !thumbs::thumb_exists(&abs) {
+        if thumbs::thumb_exists(&abs) {
+            thumb_rel = Some(rel);
+        } else if opts.mode != "full" && thumbs::failed_before(&abs, &src.path) {
+            // 同じ元ファイルから前回作れなかった。差分取り込みでは作り直さない(全期間の取り込みでは作り直しを試す)
+            thumb_rel = None;
+            thumb_failed = true;
+        } else {
             let kind = if jpg.is_some() { ThumbKind::Image } else { ThumbKind::Video };
             thumb_jobs.push(ThumbJob { src: src.path.clone(), dst: abs, kind });
+            thumb_rel = Some(rel);
         }
-        thumb_rel = Some(rel);
     }
 
-    let has_body = row.body.as_deref().is_some_and(|b| !b.is_empty());
+    // 本文ファイルを読めなかったときは保存済みの本文を使う(一時的なロックで本文と検索索引を消さない)
+    let body = if row.body_unreadable { prev.as_ref().and_then(|p| p.body.clone()) } else { row.body.clone() };
+    let has_body = body.as_deref().is_some_and(|b| !b.is_empty());
     let replace_fts = |conn: &Connection| -> rusqlite::Result<()> {
         let rowid: Option<i64> = conn
             .prepare_cached("SELECT rowid FROM messages WHERE member=? AND msg_id=?")?
@@ -523,7 +566,7 @@ fn upsert_one(
             conn.prepare_cached("DELETE FROM messages_fts WHERE rowid=?")?.execute([rowid])?;
             if has_body {
                 conn.prepare_cached("INSERT INTO messages_fts(rowid, body, member, msg_id) VALUES (?, ?, ?, ?)")?
-                    .execute(params![rowid, row.body, row.member, row.msg_id])?;
+                    .execute(params![rowid, body, row.member, row.msg_id])?;
             }
         }
         Ok(())
@@ -541,26 +584,28 @@ fn upsert_one(
                    thumb=COALESCE(excluded.thumb, messages.thumb), missing=0",
             )?
             .execute(params![
-                row.member, row.group, row.msg_id, row.ts, row.ts_raw, row.body, row.media, row.kind, row.flag, thumb_rel
+                row.member, row.group, row.msg_id, row.ts, row.ts_raw, body, row.media, row.kind, row.flag, thumb_rel
             ])?;
             replace_fts(conn)?;
             summary.new_count += 1;
         }
         Some(p) => {
-            let changed = p.body != row.body
+            let changed = p.body != body
+                || p.group != row.group
                 || p.media != row.media
                 || p.kind != row.kind
                 || p.flag != row.flag
                 || p.missing != 0
                 || p.ts_raw != row.ts_raw
-                || (thumb_rel.is_some() && p.thumb != thumb_rel);
+                || (thumb_rel.is_some() && p.thumb != thumb_rel)
+                || (thumb_failed && p.thumb.is_some());
             if changed {
                 conn.prepare_cached(
                     "UPDATE messages SET group_=?, ts=?, ts_raw=?, body=?, media=?, kind=?, flag=?, thumb=?, missing=0
                      WHERE member=? AND msg_id=?",
                 )?
                 .execute(params![
-                    row.group, row.ts, row.ts_raw, row.body, row.media, row.kind, row.flag, thumb_rel, row.member,
+                    row.group, row.ts, row.ts_raw, body, row.media, row.kind, row.flag, thumb_rel, row.member,
                     row.msg_id
                 ])?;
                 replace_fts(conn)?;

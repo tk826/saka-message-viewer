@@ -92,14 +92,14 @@ pub fn parse_filename(name: &str) -> Option<(&str, &str, &str, &str)> {
 /// 名前順に並べる(同じ親の下での比較。Windows は大文字小文字を区別しない)。
 fn sort_paths(v: &mut [PathBuf]) {
     let key = |p: &PathBuf| {
-        let n = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let n = p.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
         if cfg!(windows) { n.to_lowercase() } else { n }
     };
     v.sort_by_key(key);
 }
 
 fn name_of(p: &Path) -> String {
-    p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    p.file_name().map_or_default(|n| n.to_string_lossy().into_owned())
 }
 
 fn list_dir(d: &Path) -> Vec<PathBuf> {

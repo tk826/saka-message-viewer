@@ -6,6 +6,7 @@
 //! - user.db: 書き込みが主で同時アクセスが少ないため、単一接続+Mutex。
 
 use crate::error::{blocking, ApiResult};
+use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, OpenFlags, ToSql};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -80,6 +81,14 @@ pub fn open_index_db(path: &Path, ensure_schema: bool) -> rusqlite::Result<Conne
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     apply_pragmas(&conn, true)?;
+    // 検索の短い語(LIKE 経路)で、英字以外も大文字小文字を区別せずに照合するための関数。
+    // 畳み方はスニペットの強調と同じ(`search::fold_text`)
+    conn.create_scalar_function(
+        "mv_fold",
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| Ok(ctx.get::<Option<String>>(0)?.map(|s| crate::search::fold_text(&s))),
+    )?;
     if ensure_schema {
         conn.execute_batch(SCHEMA_SQL)?;
         conn.execute_batch(FTS_SQL)?;

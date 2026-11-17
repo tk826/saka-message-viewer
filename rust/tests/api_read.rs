@@ -220,7 +220,69 @@ fn search_no_hit_and_validation() {
     assert_eq!(srv.get_q("/api/search", &[("q", "a"), ("from", "2026/08/01")]).status, 400);
 }
 
+/// 短い語(2文字以下。LIKE 経路)でも、英字以外の大文字小文字を区別しない(3文字以上の FTS 経路と同じ)。
+#[test]
+fn search_short_terms_ignore_non_ascii_case() {
+    let srv = Server::indexed();
+    let dir = srv.root.join("grpX/member_b");
+    std::fs::write(dir.join("20_0_20260804000000.txt"), "Äb は大文字").unwrap();
+    std::fs::write(dir.join("21_0_20260804010000.txt"), "äb は小文字").unwrap();
+    std::fs::write(dir.join("22_0_20260804020000.txt"), "ΣΑ ギリシャ").unwrap();
+    srv.reindex_full_ok();
+    let hits = |q: &str| {
+        let mut v = ids(&search(&srv, q, &[("member", "member_b")])["results"]);
+        v.sort();
+        v
+    };
+    assert_eq!(hits("ÄB"), [20, 21]);
+    assert_eq!(hits("äb"), [20, 21]);
+    assert_eq!(hits("σα"), [22]);
+    // 除外語も同じ。"は" を含む 20・21 のうち、äb を含むものを除く
+    assert_eq!(hits("は -ÄB"), Vec::<i64>::new());
+    // ASCII だけの語は従来どおり(SQLite の LIKE も ASCII は区別しない)
+    assert_eq!(ids(&search(&srv, "TA", &[])["results"]), [4]);
+}
+
+/// NUL を含む検索語は NUL を除いて扱う(以前は LIKE のパターンがそこで切れ、全件ヒット・全件除外になっていた)。
+#[test]
+fn search_strips_nul() {
+    let srv = Server::indexed();
+    assert_eq!(srv.get_q("/api/search", &[("q", "\0")]).status, 422); // 除くと空
+    assert_eq!(search(&srv, "\0あ", &[]), search(&srv, "あ", &[]));
+    assert_eq!(search(&srv, "ライブ\0", &[]), search(&srv, "ライブ", &[]));
+    // 除外語に NUL があっても全件除外にならない
+    assert_eq!(search(&srv, "ライブ -あり\0がとう", &[]), search(&srv, "ライブ -ありがとう", &[]));
+    assert!(search(&srv, "ライブ -あり\0がとう", &[])["total"].as_i64().unwrap() > 0);
+}
+
 // ------------------------------------------------------------- jump / calendar
+
+/// JST で 9999 年を超える日時のファイルは取り込まない。以前の版が取り込んだ行があってもカレンダーは壊れない。
+#[test]
+fn calendar_ignores_timestamps_beyond_year_9999() {
+    let srv = Server::indexed();
+    // UTC 9999-12-31 15:00 = JST 10000-01-01 00:00
+    std::fs::write(srv.root.join("grpX/member_b/30_0_99991231150000.txt"), "未来").unwrap();
+    srv.reindex_full_ok();
+    let d = srv.get_json("/api/messages", &[("member", "member_b"), ("limit", "100")]);
+    assert!(!ids(&d["messages"]).contains(&30), "取り込まれていない");
+
+    // 以前の版が取り込んだ行
+    let db = rusqlite::Connection::open(srv.data_dir().join("index.db")).unwrap();
+    db.execute(
+        "INSERT INTO messages (member, msg_id, ts, ts_raw, body, kind, flag, missing)
+         VALUES ('member_b', 31, 253402268400, '99991231150000', 'x', 'text', 0, 0)",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    let r = srv.get_q("/api/calendar", &[("member", "member_b")]);
+    assert_eq!(r.status, 200);
+    assert_eq!(r.json()["calendar"], json!([{ "yearmonth": "2026-08", "count": 2 }]));
+    let r = srv.get_q("/api/calendar", &[("member", "member_b"), ("yearmonth", "9999-12")]);
+    assert_eq!((r.status, r.json()["days"].clone()), (200, json!([])));
+}
+
 #[test]
 fn jump_and_date_parsing() {
     let srv = Server::indexed();

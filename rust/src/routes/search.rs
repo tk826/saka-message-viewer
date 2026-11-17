@@ -4,7 +4,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::message::MsgRow;
 use crate::params::Params;
 use crate::routes::read::rows_with_comments;
-use crate::search::{build_fts_query, like_escape, make_snippet, parse_search_terms, plan_terms};
+use crate::search::{build_fts_query, fold_text, like_escape, make_snippet, parse_search_terms, plan_terms};
 use crate::state::AppState;
 use crate::timeutil::jst_date_to_epoch_range;
 use axum::extract::{RawQuery, State};
@@ -28,7 +28,8 @@ fn search_error(e: rusqlite::Error) -> ApiError {
 
 pub async fn search(State(st): State<AppState>, RawQuery(q): RawQuery) -> ApiResult<Json<Value>> {
     let p = Params::parse(q);
-    let q = p.required("q")?;
+    // NUL は SQLite の LIKE パターンをそこで打ち切ってしまう(全件ヒット・全件除外になる)ため取り除く
+    let q = p.required("q")?.replace('\0', "");
     if q.is_empty() {
         return Err(ApiError::validation("string_too_short", "q", "String should have at least 1 character"));
     }
@@ -74,13 +75,19 @@ pub async fn search(State(st): State<AppState>, RawQuery(q): RawQuery) -> ApiRes
         }
         (&mark_terms, &plan.like_exclude)
     };
-    for t in like_include {
-        sql_from.push_str(" AND m.body LIKE ? ESCAPE '\\'");
-        params.push(SqlValue::Text(format!("%{}%", like_escape(t))));
-    }
-    for t in like_exclude {
-        sql_from.push_str(" AND m.body NOT LIKE ? ESCAPE '\\'");
-        params.push(SqlValue::Text(format!("%{}%", like_escape(t))));
+    // SQLite の LIKE が大文字小文字を区別しないのは ASCII だけ。英字以外を含む語は、FTS(trigram)や
+    // スニペットの強調と同じく区別しないよう、本文と語を畳んでから部分一致で比べる(ASCII だけの語は速い LIKE のまま)。
+    // 本文が NULL の行は、どちらの書き方でも含める語・除外語とも条件が NULL になり、ヒットしない
+    for (terms, negate) in [(like_include, false), (like_exclude, true)] {
+        for t in terms {
+            if t.is_ascii() {
+                sql_from.push_str(if negate { " AND m.body NOT LIKE ? ESCAPE '\\'" } else { " AND m.body LIKE ? ESCAPE '\\'" });
+                params.push(SqlValue::Text(format!("%{}%", like_escape(t))));
+            } else {
+                sql_from.push_str(if negate { " AND instr(mv_fold(m.body), ?) = 0" } else { " AND instr(mv_fold(m.body), ?) > 0" });
+                params.push(SqlValue::Text(fold_text(t)));
+            }
+        }
     }
 
     let mut filters = String::new();

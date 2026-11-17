@@ -1,7 +1,10 @@
 [package]
 name = "message-viewer"
 version = "0.1.1"
-edition = "2021"
+edition = "2024"
+# str::trim_prefix(1.100)・Option/Result::map_or_default(1.98) を使うため 1.100 以上
+# (古い Rust では「1.100 以上が必要」と分かりやすく止まる)
+rust-version = "1.100"
 description = "坂道メッセージビューア"
 license = "MIT"
 
@@ -16,7 +19,8 @@ axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.6", features = ["fs"] }
 # bundled SQLite は FTS5 有効。trigram トークナイザは SQLite>=3.34 が必要(bundled は十分新しい)
-rusqlite = { version = "0.32", features = ["bundled"] }
+# functions: 検索で使う SQL 関数(mv_fold)を登録するため
+rusqlite = { version = "0.32", features = ["bundled", "functions"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 form_urlencoded = "1"
 

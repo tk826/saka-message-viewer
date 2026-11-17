@@ -1331,10 +1331,14 @@ body {
   gap: 2px;
   padding: 0 12px;
   border-bottom: 1px solid var(--panel-border);
+  /* 画面が狭くてタブが収まらないときは、折り返さずに横へスクロールする */
+  overflow-x: auto;
 }
 
 .settings-tab {
   flex: 1;
+  /* 「保存先フォルダ」などのタブ名を途中で改行しない(選択中は太字になって幅が増える) */
+  white-space: nowrap;
   padding: 9px 6px;
   border: none;
   background: transparent;

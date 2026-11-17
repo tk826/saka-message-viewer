@@ -4,6 +4,9 @@
 use crate::error::{ApiError, ApiResult};
 use chrono::NaiveDate;
 
+/// 9999-12-31 23:59:59 の epoch 秒。`ts + 9h`(JST)がこれを超えると SQLite の日付関数が NULL を返す。
+pub const MAX_TS_JST: i64 = 253_402_300_799;
+
 /// `YYYY-MM-DD` の日付をパースする。
 /// 年は4桁(0000は不可)、月日は1〜2桁(`2026-8-2` も可)。空白・符号は不可。数字は ASCII のみ。
 fn parse_ymd(s: &str) -> Option<NaiveDate> {

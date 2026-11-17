@@ -20,6 +20,8 @@ Release の本文には、ダウンロード方法の案内と、前回のタグ
 
 ## zip の中身
 
+zip の中は `saka-message-viewer-<版>-windows-x64\` フォルダが1つあり、その下に次のファイルが入る。
+
 | ファイル | 内容 |
 | --- | --- |
 | `message-viewer.exe` | サーバ本体（Visual C++ ランタイム・SQLite を組み込み済み） |

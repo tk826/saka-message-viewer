@@ -59,6 +59,14 @@ foreach ($file in $targetFiles) {
         if ($parentDir.Name -eq $yyyymm -and $grandParentDir -and $grandParentDir.Name -eq $yyyy) {
             continue
         }
+        # 年月が合わなくても「...\YYYY\YYYYMM\」の形のフォルダ(別ツールが JST 基準で分けた場合など)にあるファイルは動かさない。
+        # さらに下へ入れ子に移すと、取り込み(メンバー\YYYY\YYYYMM\ の直下だけを見る)の対象外になってしまう
+        if ($parentDir.Name -match '^\d{6}$' -and $grandParentDir -and $grandParentDir.Name -match '^\d{4}$' -and
+            $parentDir.Name.StartsWith($grandParentDir.Name)) {
+            Write-Host "[スキップ] 既に年月フォルダにあります(ファイル名の年月 $yyyymm と異なるため確認してください): $($file.FullName)" -ForegroundColor Yellow
+            $skipCount++
+            continue
+        }
 
         $destDir = Join-Path $file.DirectoryName (Join-Path $yyyy $yyyymm)
         $destPath = Join-Path $destDir $file.Name

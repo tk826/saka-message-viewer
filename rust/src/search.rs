@@ -34,12 +34,13 @@ pub fn parse_search_terms(q: &str) -> (Vec<String>, Vec<String>) {
         }
         // 第1候補: -?"[^"]*"
         let (neg, j) = if c[i] == '-' { (true, i + 1) } else { (false, i) };
-        if j < n && c[j] == '"' {
-            if let Some(k) = (j + 1..n).find(|&k| c[k] == '"') {
-                push(neg, c[j + 1..k].iter().collect());
-                i = k + 1;
-                continue;
-            }
+        if j < n
+            && c[j] == '"'
+            && let Some(k) = (j + 1..n).find(|&k| c[k] == '"')
+        {
+            push(neg, c[j + 1..k].iter().collect());
+            i = k + 1;
+            continue;
         }
         // 第2候補: -?\S+ (貪欲)。`-` の後に非空白が無ければ `-` を含めて1語
         let (neg, start) = if c[i] == '-' && i + 1 < n && !is_space(c[i + 1]) { (true, i + 1) } else { (false, i) };
@@ -145,6 +146,11 @@ fn fold_chars(s: &[char]) -> Vec<char> {
 }
 
 fn fold_str(s: &str) -> Vec<char> {
+    s.chars().map(fold_char).collect()
+}
+
+/// 大文字小文字を区別しない照合用に畳んだ文字列(SQL 関数 `mv_fold` の中身)。
+pub fn fold_text(s: &str) -> String {
     s.chars().map(fold_char).collect()
 }
 

@@ -76,6 +76,7 @@ fn settings_saves_config_and_starts_reindex() {
     assert_eq!(r.status, 200);
     let d = r.json();
     assert_eq!(d["configured"], json!(true));
+    assert_eq!(d["index_started"], json!(true));
     assert!(d["root"].as_str().unwrap().replace('\\', "/").ends_with("/messages"));
     srv.wait_reindex_idle();
     assert_eq!(srv.config_json()["root"], json!(root)); // config.json に書き戻される
@@ -107,6 +108,22 @@ fn cross_site_rejected() {
     let nav = [("Sec-Fetch-Site", "cross-site"), ("Sec-Fetch-Mode", "navigate")];
     assert_eq!(srv.get_h("/", &nav).status, 200);
     assert_eq!(srv.get_h("/api/threads", &nav).status, 200);
+    let doc = [("Sec-Fetch-Site", "cross-site"), ("Sec-Fetch-Mode", "navigate"), ("Sec-Fetch-Dest", "document")];
+    assert_eq!(srv.get_h("/", &doc).status, 200);
+    // 他サイトの iframe への読み込み(これも mode=navigate)は拒否する
+    let iframe = [("Sec-Fetch-Site", "cross-site"), ("Sec-Fetch-Mode", "navigate"), ("Sec-Fetch-Dest", "iframe")];
+    assert_eq!(srv.get_h("/", &iframe).status, 403);
+}
+
+/// すべての応答(拒否・404 を含む)で iframe への埋め込みを禁止する。
+#[test]
+fn framing_is_denied() {
+    let srv = Server::start();
+    let cross = [("Sec-Fetch-Site", "cross-site")];
+    for r in [srv.get("/"), srv.get("/api/threads"), srv.get("/no/such"), srv.get_h("/api/threads", &cross)] {
+        assert_eq!(r.header("x-frame-options"), "DENY");
+        assert_eq!(r.header("content-security-policy"), "frame-ancestors 'none'");
+    }
 }
 
 #[test]

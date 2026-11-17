@@ -39,8 +39,8 @@ impl MsgRow {
 
     /// API のメッセージオブジェクト。`media`/`thumb` が空文字のときは URL を null にする。
     pub fn to_json(&self, comment: Option<&String>) -> Value {
-        let media_url = self.media.as_deref().filter(|s| !s.is_empty()).map(|m| format!("/media/{m}"));
-        let thumb_url = self.thumb.as_deref().filter(|s| !s.is_empty()).map(|t| format!("/thumbs/{t}"));
+        let media_url = self.media.as_deref().filter(|s| !s.is_empty()).map(|m| format!("/media/{}", encode_path(m)));
+        let thumb_url = self.thumb.as_deref().filter(|s| !s.is_empty()).map(|t| format!("/thumbs/{}", encode_path(t)));
         json!({
             "member": self.member,
             "group": self.group,
@@ -55,5 +55,32 @@ impl MsgRow {
             "thumb_url": thumb_url,
             "comment": comment,
         })
+    }
+}
+
+/// `/` 区切りの相対パスを URL のパスとして使えるよう、各部分をパーセントエンコードする(`/` はそのまま)。
+/// メンバー名・ファイル名に `#`(以降がフラグメントになる)や `%XX`(サーバ側で別の文字に戻る)が
+/// 含まれていても、そのファイルを指す URL になる。サーバ(axum の Path)はエンコードを戻してからファイルを探す。
+fn encode_path(rel: &str) -> String {
+    let mut out = String::with_capacity(rel.len());
+    for b in rel.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_path;
+
+    #[test]
+    fn encode_path_keeps_separators_and_escapes_the_rest() {
+        assert_eq!(encode_path("member_a/2026/202608/6_1_20260807000000.jpg"), "member_a/2026/202608/6_1_20260807000000.jpg");
+        assert_eq!(encode_path("a#b/c?d/100%41 x.jpg"), "a%23b/c%3Fd/100%2541%20x.jpg");
+        assert_eq!(encode_path("日向/a"), "%E6%97%A5%E5%90%91/a");
     }
 }

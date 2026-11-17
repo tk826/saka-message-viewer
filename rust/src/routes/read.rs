@@ -5,7 +5,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::message::{MsgRow, MSG_COLS};
 use crate::params::Params;
 use crate::state::AppState;
-use crate::timeutil::{is_yearmonth, jst_date_to_epoch_range, jst_month_epoch_range};
+use crate::timeutil::{is_yearmonth, jst_date_to_epoch_range, jst_month_epoch_range, MAX_TS_JST};
 use axum::extract::{RawQuery, State};
 use axum::Json;
 use rusqlite::{Connection, ToSql};
@@ -143,13 +143,14 @@ pub async fn calendar(State(st): State<AppState>, RawQuery(q): RawQuery) -> ApiR
             .db
             .run(move |c| {
                 // 月の範囲は ts で絞る(strftime で比べると索引が使えず、メンバーの全行を見ることになる)
+                // JST で 9999 年を超える行(以前の版が取り込んだもの)は日付にできないので数えない
                 let mut stmt = c.prepare(
                     "SELECT strftime('%Y-%m-%d', ts + 9 * 3600, 'unixepoch') AS date, COUNT(*) AS cnt
                      FROM messages
-                     WHERE member=? AND ts >= ? AND ts <= ?
+                     WHERE member=? AND ts >= ? AND ts <= ? AND ts + 9 * 3600 <= ?
                      GROUP BY date ORDER BY date",
                 )?;
-                let it = stmt.query_map(rusqlite::params![m, ts_min, ts_max], |r| {
+                let it = stmt.query_map(rusqlite::params![m, ts_min, ts_max, MAX_TS_JST], |r| {
                     Ok(json!({ "date": r.get::<_, String>(0)?, "count": r.get::<_, i64>(1)? }))
                 })?;
                 it.collect::<rusqlite::Result<Vec<_>>>()
@@ -164,9 +165,9 @@ pub async fn calendar(State(st): State<AppState>, RawQuery(q): RawQuery) -> ApiR
         .run(move |c| {
             let mut stmt = c.prepare(
                 "SELECT strftime('%Y-%m', ts + 9 * 3600, 'unixepoch') AS yearmonth, COUNT(*) AS cnt
-                 FROM messages WHERE member=? GROUP BY yearmonth ORDER BY yearmonth",
+                 FROM messages WHERE member=? AND ts + 9 * 3600 <= ? GROUP BY yearmonth ORDER BY yearmonth",
             )?;
-            let it = stmt.query_map(rusqlite::params![m], |r| {
+            let it = stmt.query_map(rusqlite::params![m, MAX_TS_JST], |r| {
                 Ok(json!({ "yearmonth": r.get::<_, String>(0)?, "count": r.get::<_, i64>(1)? }))
             })?;
             it.collect::<rusqlite::Result<Vec<_>>>()
@@ -187,12 +188,12 @@ pub async fn media_list(State(st): State<AppState>, RawQuery(q): RawQuery) -> Ap
     let to = p.opt("to");
     let limit = p.int_range("limit", 60, 1, 200)?;
 
-    if let Some(k) = &kind {
-        if !matches!(k.as_str(), "image" | "video" | "audio") {
-            return Err(ApiError::bad_request(format!(
-                "invalid kind: {k}, expected one of ['audio', 'image', 'video']"
-            )));
-        }
+    if let Some(k) = &kind
+        && !matches!(k.as_str(), "image" | "video" | "audio")
+    {
+        return Err(ApiError::bad_request(format!(
+            "invalid kind: {k}, expected one of ['audio', 'image', 'video']"
+        )));
     }
 
     let mut conds: Vec<&str> = vec!["member=?", "missing=0"];

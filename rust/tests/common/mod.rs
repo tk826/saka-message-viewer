@@ -14,6 +14,7 @@ use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 /// サンプルの member_a の msg_id → ts。ts_raw は UTC として解釈される(例: 20260801000000 → 1785542400)。
@@ -172,8 +173,26 @@ pub fn raw_request(port: u16, method: &str, path: &str, headers: &[(&str, &str)]
 
 static SANDBOX_SEQ: AtomicUsize = AtomicUsize::new(0);
 
+/// このテストバイナリで既に渡したポート。
+/// 空きポートは一度 bind して閉じてから渡すため、サーバが bind するまでの間に、並行して動く別のテストが
+/// 同じポートを受け取り得る。そうなると後から起動した側は bind に失敗し、そのテストは相手のサーバに
+/// 問い合わせて(取り込み状態の違いなどで)誤って失敗する。同じポートを二度渡さないことで防ぐ。
+static USED_PORTS: Mutex<Vec<u16>> = Mutex::new(Vec::new());
+
 fn free_port() -> u16 {
-    std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port()
+    let mut used = USED_PORTS.lock().unwrap_or_else(PoisonError::into_inner);
+    loop {
+        let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+        if !used.contains(&port) {
+            used.push(port);
+            return port;
+        }
+    }
+}
+
+/// data/server_log.txt にある起動の区切り行の数。サーバは bind に成功した直後にこの行を書く。
+fn startup_count(sandbox: &Path) -> usize {
+    std::fs::read_to_string(sandbox.join("data").join("server_log.txt")).map_or(0, |t| t.matches(" 起動 ==========").count())
 }
 
 fn project_root() -> PathBuf {
@@ -230,8 +249,47 @@ impl Server {
         sandbox.join("config.json")
     }
 
+    /// サンドボックスの設定ファイルで `message-viewer` を実行するコマンド(引数は呼び出し側で足す)。
+    fn command(sandbox: &Path) -> Command {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_message-viewer"));
+        cmd.arg("--config")
+            .arg(Self::config_path(sandbox))
+            .current_dir(sandbox)
+            .stdin(std::process::Stdio::null());
+        // コンソールを持たないプロセス(IDE など)からテストすると、サーバは自分専用のコンソールを作られて
+        // 「ダブルクリックで起動された」と判断し、起動失敗時にブラウザを開いて Enter を待ってしまう。
+        // コンソールを持たせずに起動して、その判断にならないようにする
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const DETACHED_PROCESS: u32 = 0x0000_0008;
+            cmd.creation_flags(DETACHED_PROCESS);
+        }
+        // 利用者環境の設定を拾わない。PATH 上の ffmpeg で動画サムネの有無が変わらないよう PATH も絞る
+        for (k, _) in std::env::vars() {
+            if k.starts_with("MSGVIEWER_") {
+                cmd.env_remove(k);
+            }
+        }
+        let system_dir = std::env::var("SystemRoot").map_or_default(|r| format!(r"{r}\System32"));
+        cmd.env("PATH", system_dir);
+        cmd
+    }
+
+    /// このサーバと同じ設定ファイルで CLI を実行する(`run_cli` を参照)。
+    pub fn cli(&self, args: &[&str]) -> (i32, String) {
+        run_cli(&self.sandbox, args)
+    }
+
     /// 設定ファイルを書いて起動する。`with_root` なら保存フォルダを設定済みにする(取り込みはしない)。
     fn launch(sandbox: PathBuf, with_root: bool) -> Server {
+        Self::launch_with_retry(sandbox, with_root, 3)
+    }
+
+    /// サーバが bind する前にポートを取られた場合は、別のポートで起動し直す(`retries` 回まで)。
+    /// 取るのはテスト外のプロセスのほか、このテスト自身がサーバへ接続するときの送信元ポートもあり得る
+    /// (どちらも同じエフェメラルポートの範囲から割り当てられるため、`USED_PORTS` では防げない)。
+    fn launch_with_retry(sandbox: PathBuf, with_root: bool, retries: u32) -> Server {
         let port = free_port();
         let root = sandbox.join("messages");
         let cfg_path = Self::config_path(&sandbox);
@@ -257,25 +315,29 @@ impl Server {
         assert!(!sandbox.join("config-dev.json").exists());
 
         let log = std::fs::File::create(sandbox.join("server.log")).unwrap();
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_message-viewer"));
-        cmd.arg("--config").arg(&cfg_path).current_dir(&sandbox).stdout(log.try_clone().unwrap()).stderr(log);
-        // 利用者環境の設定を拾わない。PATH 上の ffmpeg で動画サムネの有無が変わらないよう PATH も絞る
-        for (k, _) in std::env::vars() {
-            if k.starts_with("MSGVIEWER_") {
-                cmd.env_remove(k);
-            }
-        }
-        let system_dir = std::env::var("SystemRoot").map(|r| format!(r"{r}\System32")).unwrap_or_default();
-        cmd.env("PATH", system_dir);
+        let mut cmd = Self::command(&sandbox);
+        cmd.stdout(log.try_clone().unwrap()).stderr(log);
+        let starts_before = startup_count(&sandbox);
         let child = cmd.spawn().unwrap();
 
         let mut srv = Server { port, sandbox, root, child, cleanup: true };
         let deadline = Instant::now() + Duration::from_secs(30);
         while Instant::now() < deadline {
             if let Some(st) = srv.child.try_wait().unwrap() {
+                if retries > 0 && srv.log().contains("は既に使用されています") {
+                    srv.cleanup = false;
+                    let sandbox = srv.sandbox.clone();
+                    drop(srv);
+                    return Self::launch_with_retry(sandbox, with_root, retries - 1);
+                }
                 panic!("server exited early ({st}):\n{}", srv.log());
             }
-            if TcpStream::connect(("127.0.0.1", port)).is_ok() && srv.get("/").status == 200 {
+            // 応答しただけでは、同じポートにいる別のサーバかもしれない。
+            // このサーバが bind に成功した(起動の区切り行が増えた)ことも確かめる
+            if startup_count(&srv.sandbox) > starts_before
+                && TcpStream::connect(("127.0.0.1", port)).is_ok()
+                && srv.get("/").status == 200
+            {
                 return srv;
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -392,6 +454,14 @@ impl Drop for Server {
             let _ = std::fs::remove_dir_all(&self.sandbox);
         }
     }
+}
+
+/// サンドボックスの設定ファイルで CLI(`message-viewer --config … <args>`)を実行し、(終了コード, 出力)を返す。
+/// サーバを止めたサンドボックス(`stop_keep`)にも使える。
+pub fn run_cli(sandbox: &Path, args: &[&str]) -> (i32, String) {
+    let out = Server::command(sandbox).args(args).output().unwrap();
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    (out.status.code().unwrap_or(-1), text)
 }
 
 /// msg_id の並び。

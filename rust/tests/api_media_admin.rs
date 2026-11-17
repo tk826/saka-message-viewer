@@ -86,6 +86,24 @@ fn media_not_found_and_traversal() {
     assert_eq!(srv.get("/media/..%2f..%2fno_such_file_anywhere").status, 403);
 }
 
+/// UNC パス(`\\host\share`)は、外部ホストへ接続しに行く前に403にする
+/// (以前は解決の途中で SMB 接続を試み、応答が無いホストだと40秒以上かかっていた)。
+/// 192.0.2.1 は文書用に予約された、応答しないアドレス。
+#[cfg(windows)]
+#[test]
+fn unc_path_is_rejected_without_network_access() {
+    let srv = Server::indexed();
+    for path in [
+        "/media/%5C%5C192.0.2.1%5Cshare%5Cx.jpg",
+        "/thumbs/%5C%5C192.0.2.1%5Cshare%5Cx.jpg",
+        "/media/%2F%2F192.0.2.1%2Fshare%2Fx.jpg",
+    ] {
+        let t0 = Instant::now();
+        assert_eq!(srv.get(path).status, 403, "{path}");
+        assert!(t0.elapsed() < Duration::from_secs(5), "{path} took {:?}", t0.elapsed());
+    }
+}
+
 #[test]
 fn media_requires_root() {
     let srv = Server::start();
@@ -148,6 +166,24 @@ fn media_path() {
     assert!(!path.starts_with(r"\\?\")); // Windows の拡張パス接頭辞が付かない
 }
 
+/// メンバー名・ファイル名に `#`・`%XX`・空白があっても、media_url でそのファイルを取得できる
+/// (`#` 以降がフラグメントになったり、`%41` がサーバ側で `A` に戻ったりしない)。
+#[test]
+fn media_url_is_percent_encoded() {
+    let srv = Server::indexed();
+    let member = "m#1%41 x";
+    let dir = srv.root.join(member);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("1_2_20260801000000.mp4"), b"video-bytes").unwrap();
+    srv.reindex_full_ok();
+
+    let msgs = srv.get_json("/api/messages", &[("member", member)]);
+    let url = msgs["messages"][0]["media_url"].as_str().unwrap().to_string();
+    assert_eq!(url, "/media/m%231%2541%20x/1_2_20260801000000.mp4");
+    let r = srv.get(&url);
+    assert_eq!((r.status, r.body.as_slice()), (200, b"video-bytes".as_slice()));
+}
+
 // --------------------------------------------------------------- reindex
 #[test]
 fn reindex_requires_root() {
@@ -166,6 +202,21 @@ fn reindex_validation_and_start() {
     let r = srv.post_q("/api/reindex", &[]);
     assert_eq!(r.json(), json!({ "status": "started", "mode": "incremental", "member": null }));
     srv.wait_reindex_idle();
+}
+
+/// `member` の空文字・空白だけは未指定(全メンバー)扱い。該当0件のまま "started" にしない。
+#[test]
+fn reindex_empty_member_means_all() {
+    let srv = Server::indexed();
+    for m in ["", " "] {
+        let r = srv.post_q("/api/reindex", &[("mode", "full"), ("member", m)]);
+        assert_eq!((r.status, r.json()), (200, json!({ "status": "started", "mode": "full", "member": null })));
+        let st = srv.wait_reindex_idle();
+        assert_eq!(st["last_error"], Value::Null);
+        // 全メンバーを走査した(該当0件で何もしなかったのではない)
+        let total: i64 = srv.get_json("/api/threads", &[]).as_array().unwrap().iter().map(|t| t["count"].as_i64().unwrap()).sum();
+        assert_eq!(st["last_summary"]["total_messages_scanned"], json!(total));
+    }
 }
 
 #[test]
@@ -244,6 +295,87 @@ fn delete_member() {
     assert_eq!(r.json(), json!({ "status": "ok", "member": "幽霊", "deleted_messages": 0 }));
 }
 
+fn query_db<T: rusqlite::types::FromSql>(data_dir: &Path, sql: &str) -> T {
+    let db = rusqlite::Connection::open(data_dir.join("index.db")).unwrap();
+    db.query_row(sql, [], |r| r.get(0)).unwrap()
+}
+
+/// フォルダを別グループへ移すと、取り込み直したときにグループが更新される。
+#[test]
+fn group_change_is_reindexed() {
+    let srv = Server::indexed();
+    std::fs::rename(srv.root.join("grpX"), srv.root.join("grpY")).unwrap();
+    srv.reindex_full_ok();
+    let g: String = query_db(&srv.data_dir(), "SELECT group_concat(DISTINCT group_) FROM messages WHERE member='member_b'");
+    assert_eq!(g, "grpY");
+}
+
+/// 本文ファイルを一時的に読めない(別プロセスがロック中)ときは、保存済みの本文と検索索引を消さない。
+#[cfg(windows)]
+#[test]
+fn unreadable_text_keeps_stored_body() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let srv = Server::indexed();
+    let txt = srv.root.join("member_a/2026/202608/1_0_20260801000000.txt");
+    // 共有なしで開いて、他プロセスから読めなくする
+    let held = std::fs::OpenOptions::new().read(true).share_mode(0).open(&txt).unwrap();
+    srv.reindex_full_ok();
+    drop(held);
+    let body: String = query_db(&srv.data_dir(), "SELECT body FROM messages WHERE member='member_a' AND msg_id=1");
+    assert_eq!(body, "おはようございます");
+    let d = srv.get_json("/api/search", &[("q", "おはようございます")]);
+    assert_eq!(ids(&d["results"]), vec![1]);
+}
+
+/// 差分取り込みで、走査範囲の一番古い月の月初 0〜9時(JST)のメッセージを、走査していないのに missing にしない
+/// (ファイル名の日時は UTC なので、そのファイルは前月扱いで走査範囲の外になる)。
+#[test]
+fn incremental_does_not_mark_month_boundary_as_missing() {
+    use chrono::Datelike;
+    let srv = Server::indexed();
+    // incremental_months=2 の範囲で一番古い月(先月)の1日
+    let now = chrono::Local::now();
+    let (mut y, mut m) = (now.year(), now.month());
+    m -= 1;
+    if m == 0 {
+        m = 12;
+        y -= 1;
+    }
+    let first = chrono::NaiveDate::from_ymd_opt(y, m, 1).unwrap();
+    // 前月末日の 20:00 UTC = JST では first の 5:00
+    let dir = srv.root.join("grpX/member_b");
+    let name = format!("10_0_{}200000.txt", first.pred_opt().unwrap().format("%Y%m%d"));
+    std::fs::write(dir.join(name), "月初のメッセージ").unwrap();
+    // 同じメンバーの、走査範囲内のメッセージ(これが無いとメンバーごと走査範囲に入らない)
+    std::fs::write(dir.join(format!("11_0_{}000000.txt", first.format("%Y%m10"))), "範囲内").unwrap();
+    srv.reindex_full_ok();
+
+    let r = srv.post_q("/api/reindex", &[("mode", "incremental")]);
+    assert_eq!(r.status, 200);
+    let st = srv.wait_reindex_idle();
+    assert_eq!(st["last_error"], Value::Null, "{st}");
+    let missing: i64 = query_db(&srv.data_dir(), "SELECT missing FROM messages WHERE member='member_b' AND msg_id=10");
+    assert_eq!(missing, 0);
+}
+
+/// 壊れた画像のサムネは、作れなかったら thumb を空にし、差分取り込みのたびに作り直そうとしない。
+#[test]
+fn broken_image_thumbnail_is_not_retried() {
+    let srv = Server::indexed();
+    // 差分取り込みの走査範囲に入るよう、今月の日時にする
+    let now = chrono::Utc::now().format("%Y%m%d000000");
+    std::fs::write(srv.root.join(format!("grpX/member_b/40_1_{now}.jpg")), b"\xFF\xD8\xFF\xE0 broken").unwrap();
+    srv.reindex_full_ok();
+    let thumb: Option<String> =
+        query_db(&srv.data_dir(), "SELECT thumb FROM messages WHERE member='member_b' AND msg_id=40");
+    assert_eq!(thumb, None, "存在しないサムネを指さない");
+
+    let r = srv.post_q("/api/reindex", &[("mode", "incremental")]);
+    assert_eq!(r.status, 200);
+    assert_eq!(srv.wait_reindex_idle()["last_error"], Value::Null);
+    assert_eq!(srv.log().matches("thumb failed for").count(), 1, "差分取り込みでは作り直さない:\n{}", srv.log());
+}
+
 fn orphan_fts_rows(data_dir: &Path) -> i64 {
     let db = rusqlite::Connection::open(data_dir.join("index.db")).unwrap();
     db.query_row("SELECT COUNT(*) FROM messages_fts WHERE rowid NOT IN (SELECT rowid FROM messages)", [], |r| r.get(0))
@@ -290,24 +422,84 @@ fn orphan_fts_rows_are_cleaned_on_startup() {
     assert_eq!(srv.get_json("/api/threads", &[]).as_array().unwrap().len(), 1);
 }
 
-fn hold_index_lock(srv: &Server, pid: u32) {
-    std::fs::write(srv.data_dir().join(".index.lock"), format!("{pid}\n0\n")).unwrap();
+/// 別プロセスの取り込みを模して、このテストプロセスが .index.lock を握り、PID ファイルを書く。
+/// 返したファイルを持っている間ロックが続く。
+fn hold_index_lock(srv: &Server, pid: u32) -> std::fs::File {
+    let data = srv.data_dir();
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(data.join(".index.lock"))
+        .unwrap();
+    f.try_lock().unwrap();
+    std::fs::write(data.join(".index.pid"), format!("{pid}\n0\n")).unwrap();
+    f
 }
 
-/// 別プロセスの取り込み(.index.lock の PID が生存)中は、削除・初期化とも409。
+/// 別プロセスの取り込み(.index.lock を握っている)中は、削除・初期化とも409。
 #[test]
 fn delete_and_reset_refuse_while_other_indexer_runs() {
     let srv = Server::indexed();
-    let me = std::process::id(); // このテストプロセス自身 = 生存している
-    hold_index_lock(&srv, me);
-    for r in [srv.delete("/api/members/member_a"), srv.post("/api/reset", &json!({}))] {
+    let me = std::process::id();
+    let _lock = hold_index_lock(&srv, me);
+    for r in [
+        srv.delete("/api/members/member_a"),
+        srv.post("/api/reset", &json!({})),
+        raw_request(srv.port, "POST", "/api/reindex", &[], None),
+    ] {
         assert_eq!(r.status, 409);
         assert_eq!(r.json(), json!({ "status": "already_running", "detail": format!("index process pid={me} is running") }));
     }
     assert_eq!(srv.get_json("/api/threads", &[]).as_array().unwrap().len(), 2); // 何も消えていない
 }
 
-/// 終了済みプロセスの PID が残ったロック(stale)は無視して実行する。
+/// 別プロセスの取り込み中に保存フォルダを設定すると、保存はするが取り込みは始めず index_started=false。
+#[test]
+fn settings_does_not_start_reindex_while_other_indexer_runs() {
+    let srv = Server::start();
+    let _lock = hold_index_lock(&srv, std::process::id());
+    let root = srv.root.to_string_lossy().into_owned();
+    let r = srv.post("/api/settings", &json!({ "root": root }));
+    assert_eq!(r.status, 200);
+    assert_eq!(r.json()["index_started"], json!(false));
+    assert_eq!(srv.config_json()["root"], json!(root)); // 保存はされる
+    let st = srv.get_json("/api/reindex/status", &[]);
+    assert_eq!(st["last_error"], Value::Null); // バックグラウンドで already_running にもなっていない
+}
+
+// --------------------------------------------------------------- CLI
+/// `index --rebuild` は `--only-member` と併用できない(他のメンバーまで消えるため)。何も消さずに終了コード1。
+#[test]
+fn cli_rebuild_rejects_only_member() {
+    let sandbox = Server::indexed().stop_keep(); // サーバ起動中の拒否と区別するため止めておく
+    let (code, out) = run_cli(&sandbox, &["index", "--rebuild", "--only-member", "member_a"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("--only-member"), "{out}");
+    let srv = Server::restart(sandbox);
+    assert_eq!(srv.get_json("/api/threads", &[]).as_array().unwrap().len(), 2); // 何も消えていない
+}
+
+/// サーバ起動中は `index --rebuild` を拒否する(サーバが開いている index.db を消せない/消すと食い違う)。
+/// 止めていれば作り直せる。
+#[test]
+fn cli_rebuild_refuses_while_server_runs() {
+    let srv = Server::indexed();
+    let (code, out) = srv.cli(&["index", "--rebuild", "--no-thumbs"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("サーバが起動中"), "{out}");
+    assert_eq!(srv.get_json("/api/threads", &[]).as_array().unwrap().len(), 2);
+
+    let sandbox = srv.stop_keep();
+    let (code, out) = run_cli(&sandbox, &["index", "--rebuild", "--no-thumbs"]);
+    assert_eq!(code, 0, "{out}");
+    let srv = Server::restart(sandbox);
+    assert_eq!(srv.get_json("/api/threads", &[]).as_array().unwrap().len(), 2);
+}
+
+/// 取り込みが異常終了して PID ファイルだけが残った(ロックは OS が解放済み)場合は無視して実行する。
+/// その PID が別のプロセスに再利用されて生きていても同じ。
 #[test]
 fn stale_index_lock_is_ignored() {
     let srv = Server::indexed();
@@ -316,12 +508,15 @@ fn stale_index_lock_is_ignored() {
     } else {
         std::process::Command::new("true").spawn().unwrap()
     };
-    let pid = child.id();
+    let dead = child.id();
     child.wait().unwrap();
-    hold_index_lock(&srv, pid);
+    drop(hold_index_lock(&srv, dead)); // ロックは解放し、PID ファイルだけ残す
+    assert_eq!(srv.delete("/api/members/ghost").status, 200);
+    // PID が再利用された場合(生きている PID = このテストプロセス)
+    drop(hold_index_lock(&srv, std::process::id()));
     assert_eq!(srv.delete("/api/members/ghost").status, 200);
     assert_eq!(srv.post("/api/reset", &json!({})).status, 200);
-    assert!(!srv.data_dir().join(".index.lock").exists()); // reset はロックファイルも消す
+    assert!(!srv.data_dir().join(".index.pid").exists()); // 残っていた PID ファイルも片付く
 }
 
 // -------------------------------------------------------------------- 初期化
@@ -354,6 +549,64 @@ fn reset() {
     assert_eq!(srv.put("/api/hidden-members", &json!({ "member": "x", "hidden": true })).status, 200);
     // 2回続けても成功する
     assert_eq!(srv.post("/api/reset", &json!({})).status, 200);
+    assert_eq!(resetting_leftovers(&data), Vec::<String>::new()); // 一時的な名前のものは残らない
+}
+
+/// data/ に残っている、初期化の一時的な名前(`*.resetting`)のもの。
+fn resetting_leftovers(data: &Path) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(data)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".resetting"))
+        .collect();
+    v.sort();
+    v
+}
+
+/// 初期化の途中で失敗したら(サムネを他のプロセスが開いていて動かせない)、何も変えずに 500。
+/// 閉じてからやり直せば初期化できる。Windows では開いているファイルを含むフォルダの名前を変えられないことを使う。
+#[cfg(windows)]
+#[test]
+fn reset_is_all_or_nothing() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let srv = Server::indexed();
+    srv.post("/api/favorites", &json!({ "member": "member_a", "msg_id": 1 }));
+    srv.put("/api/comments", &json!({ "member": "member_a", "msg_id": 1, "comment": "x" }));
+    let root_before = srv.config_json()["root"].clone();
+    let data = srv.data_dir();
+    let rel = thumb_url("member_a", 6).trim_start_matches("/thumbs/").to_string();
+    // エクスプローラーのプレビューなどと同じく、削除・名前の変更を許さずに開く(FILE_SHARE_READ のみ)
+    let held = std::fs::OpenOptions::new().read(true).share_mode(1).open(data.join("thumbs").join(&rel)).unwrap();
+
+    let r = srv.post("/api/reset", &json!({}));
+    assert_eq!(r.status, 500);
+    assert!(r.json()["detail"].as_str().unwrap().contains("何も変更していません"), "{:?}", r.json());
+    // 何も消えていない
+    assert_eq!(srv.get_json("/api/threads", &[]).as_array().unwrap().len(), 2);
+    assert_eq!(srv.get_json("/api/favorites", &[])["favorites"].as_array().unwrap().len(), 1);
+    assert_eq!(srv.get_json("/api/messages", &[("member", "member_a")])["messages"][0]["comment"], json!("x"));
+    assert_eq!(srv.config_json()["root"], root_before);
+    assert_eq!(srv.get_json("/api/settings", &[])["configured"], json!(true));
+    assert_eq!(resetting_leftovers(&data), Vec::<String>::new());
+
+    drop(held);
+    assert_eq!(srv.post("/api/reset", &json!({})).status, 200);
+    assert_eq!(srv.get_json("/api/threads", &[]), json!([]));
+    assert_eq!(srv.get_json("/api/favorites", &[])["favorites"], json!([]));
+    assert_eq!(resetting_leftovers(&data), Vec::<String>::new());
+}
+
+/// 前回の初期化で消し損ねた一時的な名前のものは、起動時に片付ける。
+#[test]
+fn reset_leftovers_are_cleaned_on_startup() {
+    let srv = Server::indexed();
+    let data = srv.data_dir();
+    let sandbox = srv.stop_keep();
+    std::fs::write(data.join("index.db.resetting"), b"old").unwrap();
+    std::fs::create_dir_all(data.join("thumbs.resetting").join("ab")).unwrap();
+    let srv = Server::restart(sandbox);
+    assert_eq!(resetting_leftovers(&srv.data_dir()), Vec::<String>::new());
+    assert_eq!(srv.get_json("/api/threads", &[]).as_array().unwrap().len(), 2); // 本物には触れない
 }
 
 #[test]

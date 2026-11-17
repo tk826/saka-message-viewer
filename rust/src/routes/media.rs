@@ -61,8 +61,25 @@ fn resolve_nonstrict(p: &Path) -> PathBuf {
     }
 }
 
+/// `rel` が `base` の下を指す相対パスの形をしているか(ファイルシステムには触れない)。
+/// 絶対パス・ドライブ指定・UNC(`\\host\share`)は `base.join` で `base` ごと置き換わるため拒否する。
+/// これを解決後の確認に任せると、確認の前に `canonicalize` が外部ホストへ SMB 接続してしまう
+/// (外部サイトからのリンク1つで、Windows の認証情報のハッシュが送られうる)。
+/// Windows では `:` も拒否する(代替データストリーム `file::$DATA` など。正規のファイル名には含まれない)。
+fn is_plain_relative(rel: &str) -> bool {
+    if cfg!(windows) && rel.contains(':') {
+        return false;
+    }
+    Path::new(rel)
+        .components()
+        .all(|c| matches!(c, std::path::Component::Normal(_) | std::path::Component::CurDir | std::path::Component::ParentDir))
+}
+
 /// パストラバーサル対策: 解決後のパスが `base` の外に出ていれば403。実在チェックはしない。
 pub fn safe_resolve_no_exist_check(base: &Path, rel: &str) -> ApiResult<PathBuf> {
+    if !is_plain_relative(rel) {
+        return Err(ApiError::forbidden("invalid path"));
+    }
     let candidate = resolve_nonstrict(&base.join(rel));
     let base_resolved = resolve_nonstrict(base);
     if !candidate.starts_with(&base_resolved) {
@@ -122,11 +139,11 @@ fn range_error(size: u64, detail: &str, with_content_range: bool) -> Response {
 fn file_body(mut file: std::fs::File, start: u64, len: u64) -> Body {
     let (tx, rx) = tokio::sync::mpsc::channel::<std::io::Result<Bytes>>(QUEUE);
     tokio::task::spawn_blocking(move || {
-        if start > 0 {
-            if let Err(e) = file.seek(SeekFrom::Start(start)) {
-                let _ = tx.blocking_send(Err(e));
-                return;
-            }
+        if start > 0
+            && let Err(e) = file.seek(SeekFrom::Start(start))
+        {
+            let _ = tx.blocking_send(Err(e));
+            return;
         }
         let mut remaining = len;
         while remaining > 0 {
@@ -386,5 +403,28 @@ mod tests {
         assert!(safe_resolve_no_exist_check(&base, "a/../b.jpg").is_ok());
         assert!(safe_resolve_no_exist_check(&base, "no/such/file.jpg").is_ok());
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// 絶対パス・UNC はファイルシステムに触れる前に拒否する(外部ホストへ接続させない)。
+    #[test]
+    fn non_relative_paths_are_rejected_without_io() {
+        assert!(is_plain_relative("a/b.jpg"));
+        assert!(is_plain_relative("a/../b.jpg"));
+        assert!(is_plain_relative("./a.jpg"));
+        assert!(!is_plain_relative("/etc/passwd"));
+        if cfg!(windows) {
+            for bad in [
+                r"\\attacker\share\x.jpg",
+                r"//attacker/share/x.jpg",
+                r"\\?\UNC\attacker\share\x",
+                r"\\.\pipe\x",
+                r"C:\Windows\win.ini",
+                r"C:x.jpg",
+                r"\Windows\win.ini",
+                "a.mp4::$DATA",
+            ] {
+                assert!(!is_plain_relative(bad), "{bad}");
+            }
+        }
     }
 }

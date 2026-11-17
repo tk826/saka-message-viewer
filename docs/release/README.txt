@@ -22,10 +22,13 @@ colmsg で保存したメッセージ・画像・動画・音声を、ブラウ�
 
 ■ フォルダの中身
 
-message-viewer.exe   サーバ本体(これだけで動きます。インストール不要)
-config.json          設定(ポート番号など。保存フォルダは画面から指定する)
-static\              画面
+message-viewer.exe   サーバ本体(インストール不要。config.json と static\ を同じフォルダに置いたまま使う)
+config.json          設定(ポート番号など。保存フォルダは画面から指定する)。消すと起動しません
+static\              画面。消すと画面が表示されません
 MoveFiles.bat        保存フォルダの整形(任意)
+script_ps1\          MoveFiles.bat が使うスクリプト
+README.txt           この説明
+README.md, LICENSE   プロジェクトの説明とライセンス
 data\                初回起動時に作られる。取り込んだ内容・お気に入り・ログ(server_log.txt)
 
 ■ 更新するとき

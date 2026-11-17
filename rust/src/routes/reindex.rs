@@ -67,19 +67,10 @@ pub fn start_background(st: &AppState, mode: &str, only_member: Option<String>) 
     true
 }
 
-/// 取り込みを開始する。mode: incremental(既定。直近Nヶ月)| full(全期間)。member 指定でそのメンバーのみ。
-/// DB は作り直さないため、お気に入り・サムネは保持される。
-pub async fn start(State(st): State<AppState>, RawQuery(q): RawQuery) -> ApiResult<Json<Value>> {
-    let p = Params::parse(q);
-    let mode = p.opt("mode").unwrap_or_else(|| "incremental".into());
-    let member = p.opt("member");
-
-    if st.root().is_none() {
-        return Err(ApiError::status_conflict("root_not_configured"));
-    }
-    if mode != "incremental" && mode != "full" {
-        return Err(ApiError::bad_request(format!("invalid mode: {mode}, expected 'incremental' or 'full'")));
-    }
+/// 取り込みを確かめてから始める。自プロセスで実行中・別プロセス(CLI など)が `.index.lock` を握っている・
+/// メンバー削除や初期化の最中なら始めずに 409 already_running。
+/// (別プロセスの確認をここでしておかないと、バックグラウンドで AlreadyRunning になるだけで呼び出し側には分からない)
+pub fn try_start(st: &AppState, mode: &str, only_member: Option<String>) -> ApiResult<()> {
     if st.reindex.running.load(Ordering::SeqCst) {
         return Err(ApiError::already_running(None));
     }
@@ -87,10 +78,28 @@ pub async fn start(State(st): State<AppState>, RawQuery(q): RawQuery) -> ApiResu
     if let Some(pid) = peek_running_pid(&lock_path) {
         return Err(ApiError::already_running(Some(format!("index process pid={pid} is running"))));
     }
-    if !start_background(&st, &mode, member.clone()) {
+    if !start_background(st, mode, only_member) {
         // 確認の後に、別の取り込み・メンバー削除・初期化が先に始まった
         return Err(ApiError::already_running(None));
     }
+    Ok(())
+}
+
+/// 取り込みを開始する。mode: incremental(既定。直近Nヶ月)| full(全期間)。member 指定でそのメンバーのみ。
+/// DB は作り直さないため、お気に入り・サムネは保持される。
+pub async fn start(State(st): State<AppState>, RawQuery(q): RawQuery) -> ApiResult<Json<Value>> {
+    let p = Params::parse(q);
+    let mode = p.opt("mode").unwrap_or_else(|| "incremental".into());
+    // 空文字・空白だけは未指定(全メンバー)扱い。そのまま渡すと該当メンバーが無く、何もせずに "started" になる
+    let member = p.opt("member").filter(|m| !m.trim().is_empty());
+
+    if st.root().is_none() {
+        return Err(ApiError::status_conflict("root_not_configured"));
+    }
+    if mode != "incremental" && mode != "full" {
+        return Err(ApiError::bad_request(format!("invalid mode: {mode}, expected 'incremental' or 'full'")));
+    }
+    try_start(&st, &mode, member.clone())?;
     Ok(Json(json!({ "status": "started", "mode": mode, "member": member })))
 }
 

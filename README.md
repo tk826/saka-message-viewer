@@ -1,7 +1,7 @@
 # 坂道メッセージビューア
 
 colmsgを使用して時系列で蓄積されたメッセージ・画像・動画・音声ファイル群を、チャットアプリ風のWeb UIで閲覧・検索できるツール。
-メッセージ保存フォルダ（読み取り専用）を走査してSQLiteインデックスを構築し、バックエンドがWeb UIに配信する。バックエンドはRust製（`message-viewer.exe`。exe単体で動く）。
+メッセージ保存フォルダ（読み取り専用）を走査してSQLiteインデックスを構築し、バックエンドがWeb UIに配信する。バックエンドはRust製（`message-viewer.exe`。SQLite・Visual C++ ランタイムを組み込み済みで、インストール不要）。
 保存フォルダの指定は初回起動時にWeb UI（設定アイコン &#9881;）から行う。`config.json` を直接編集する必要はない。
 
 ![メッセージビューア画面](docs/images/screenshot.jpg)
@@ -29,8 +29,8 @@ colmsgを使用して時系列で蓄積されたメッセージ・画像・動�
 
 ## 動作要件
 
-- Windows 64bit。配布版の `message-viewer.exe` は単体で動く（SQLite・Visual C++ ランタイムは同梱）
-- 自分でビルドする場合は Rust（rustup）と Visual Studio Build Tools（C++）が必要
+- Windows 64bit。配布版は展開するだけで動く（SQLite・Visual C++ ランタイムは exe に組み込み済み。ただし exe と同じフォルダの `config.json` と `static\` は必要）
+- 自分でビルドする場合は Rust 1.100 以上（rustup）と Visual Studio Build Tools（C++）が必要
 - ffmpegは任意（動画サムネイル生成用）。無くても機能上の問題はない。詳細は [docs/ffmpeg.md](docs/ffmpeg.md) を参照
 
 ## セットアップ（ソースからビルドする場合）
@@ -63,6 +63,9 @@ cd \message-viewer
 
 ## 詳細ドキュメント
 
+- [docs/setup.md](docs/setup.md) — 保存フォルダの構成、ビルド環境の準備、別のPCでの利用
+- [docs/batch-files.md](docs/batch-files.md) — サーバの起動とバッチファイル
+- [docs/ffmpeg.md](docs/ffmpeg.md) — 動画サムネイルとffmpeg（任意）
 - [docs/cli.md](docs/cli.md) — CLI直接実行によるサーバ起動・インデックス構築、テスト
 - [docs/api.md](docs/api.md) — APIエンドポイント一覧
 - [docs/data-format.md](docs/data-format.md) — データ仕様

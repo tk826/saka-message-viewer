@@ -54,9 +54,8 @@ pub async fn set_settings(State(st): State<AppState>, body: Bytes) -> ApiResult<
         cfg.root = Some(r.clone());
         r
     };
-    // 取り込みが動いていなければ、差分取り込みをバックグラウンドで始める
-    if !st.reindex.running.load(std::sync::atomic::Ordering::SeqCst) {
-        crate::routes::reindex::start_background(&st, "incremental", None);
-    }
-    Ok(Json(json!({ "root": resolved.display().to_string(), "configured": true })))
+    // 差分取り込みをバックグラウンドで始める。別の取り込み(CLI を含む)・メンバー削除・初期化の最中なら始めず、
+    // 保存自体は成功なので 200 のまま index_started=false で知らせる
+    let index_started = crate::routes::reindex::try_start(&st, "incremental", None).is_ok();
+    Ok(Json(json!({ "root": resolved.display().to_string(), "configured": true, "index_started": index_started })))
 }

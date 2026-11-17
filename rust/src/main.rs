@@ -77,10 +77,10 @@ fn find_static_dir(cfg: &config::Config) -> PathBuf {
     if a.is_dir() {
         return a;
     }
-    if let Some(d) = std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.join("static"))) {
-        if d.is_dir() {
-            return d;
-        }
+    if let Some(d) = std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.join("static")))
+        && d.is_dir()
+    {
+        return d;
     }
     a
 }
@@ -144,6 +144,9 @@ fn main() {
         .unwrap_or_else(|e| console::fatal_exit(&format!("設定ファイルを読み込めませんでした: {e}")));
     match cli.command {
         Some(Command::Index { full, incremental: _, rebuild, only_member, no_thumbs }) => {
+            if rebuild {
+                check_rebuild_allowed(&cfg, only_member.is_some());
+            }
             let mode = if full || rebuild { "full" } else { "incremental" };
             let opts = indexer::IndexOptions { mode: mode.into(), rebuild, only_member, no_thumbs };
             match indexer::run_index(&cfg, &opts, None) {
@@ -165,6 +168,26 @@ fn main() {
             console::pause_if_standalone();
             std::process::exit(1);
         }
+    }
+}
+
+/// `index --rebuild` を実行してよいか確かめ、だめなら理由を出して終了コード1で終わる。
+/// - `--only-member` との併用: index.db 全体を消してからそのメンバーだけを取り込むことになり、他のメンバーが消える
+/// - サーバ起動中: サーバは index.db の接続を開いたままなので、Windows では削除に失敗し、
+///   Unix では消したファイルをサーバが掴み続けて画面と DB が食い違う(.index.lock はサーバの読み取りとは排他しない)
+fn check_rebuild_allowed(cfg: &config::Config, only_member: bool) {
+    if only_member {
+        logln!("[index] --rebuild と --only-member は同時に指定できません(--rebuild は全メンバーの DB を作り直します)。");
+        logln!("[index] 特定メンバーだけ取り込み直すには --full --only-member を使ってください。");
+        std::process::exit(1);
+    }
+    // サーバと同じ判定(ポートが使われていれば起動中)
+    if let Err(e) = std::net::TcpListener::bind(("127.0.0.1", cfg.port))
+        && e.kind() == std::io::ErrorKind::AddrInUse
+    {
+        logln!("[index] ポート {} が使用中です。サーバが起動中のため --rebuild できません。", cfg.port);
+        logln!("[index] サーバを止めてから実行してください。");
+        std::process::exit(1);
     }
 }
 
@@ -204,6 +227,8 @@ async fn serve(cfg: config::Config) {
     // ウィンドウを閉じても後から追えるよう、ログをファイルにも残す
     logging::open_file(&cfg.data_dir.join("server_log.txt"));
 
+    // 前回の初期化で消し損ねた一時ファイル(*.resetting)を片付ける
+    routes::admin::cleanup_reset_leftovers(&cfg);
     let db = db::Db::new(cfg.db_path.clone()).unwrap_or_else(|e| fatal("index.db", e));
     let user_db = db::UserDb::new(cfg.user_db_path()).unwrap_or_else(|e| fatal("user.db", e));
     let static_dir = find_static_dir(&cfg);

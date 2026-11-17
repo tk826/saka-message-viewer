@@ -1,7 +1,7 @@
 //! user.db 系: お気に入り・コメント・非表示メンバー・並び順。
 //!
 //! ボディの値は型どおりに受け取る(member は文字列、msg_id は整数、hidden は真偽値、comment は文字列か null)。
-//! 型が違えば400。文字列は前後の空白を除いてから使う。
+//! 型が違えば400。コメントは前後の空白を除いてから使う。メンバー名はフォルダ名そのものなので削らない。
 
 use crate::db::{fetch_comments_map, pairs_condition};
 use crate::error::{ApiError, ApiResult};
@@ -33,23 +33,34 @@ pub fn json_object(body: &Bytes) -> ApiResult<Map<String, Value>> {
     }
 }
 
-/// 文字列の項目を取り出す(前後の空白は除く)。無い・null なら None、文字列でなければ400。
-fn opt_string(payload: &Map<String, Value>, key: &str) -> ApiResult<Option<String>> {
+/// 文字列の項目をそのまま取り出す。無い・null なら None、文字列でなければ400。
+fn opt_string_raw(payload: &Map<String, Value>, key: &str) -> ApiResult<Option<String>> {
     match payload.get(key) {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::String(s)) => Ok(Some(s.trim().to_string())),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
         Some(_) => Err(ApiError::bad_request(format!("{key} は文字列で指定してください"))),
     }
 }
 
+/// 文字列の項目を取り出す(前後の空白は除く)。コメントなど、利用者が入力した文字列に使う。
+fn opt_string(payload: &Map<String, Value>, key: &str) -> ApiResult<Option<String>> {
+    Ok(opt_string_raw(payload, key)?.map(|s| s.trim().to_string()))
+}
+
+/// メンバー名を取り出す。フォルダ名そのものなので前後の空白(全角スペースを含む)は削らない
+/// (削ると、名前の前後に空白があるメンバーのお気に入り・コメントが登録できなくなる)。空白だけの名前は無いものとする。
+fn opt_member(payload: &Map<String, Value>) -> ApiResult<Option<String>> {
+    Ok(opt_string_raw(payload, "member")?.filter(|m| !m.trim().is_empty()))
+}
+
 /// 必須のメンバー名(空白だけも不可)。
 fn required_member(payload: &Map<String, Value>) -> ApiResult<String> {
-    opt_string(payload, "member")?.filter(|m| !m.is_empty()).ok_or_else(|| ApiError::bad_request("member は必須です"))
+    opt_member(payload)?.ok_or_else(|| ApiError::bad_request("member は必須です"))
 }
 
 /// `{member, msg_id}` を取り出す。msg_id は JSON の整数のみ(文字列や小数は400)。
 fn member_and_msg_id(payload: &Map<String, Value>) -> ApiResult<(String, i64)> {
-    let member = opt_string(payload, "member")?.filter(|m| !m.is_empty());
+    let member = opt_member(payload)?;
     let msg_id = payload.get("msg_id").filter(|v| !v.is_null());
     let (Some(member), Some(msg_id)) = (member, msg_id) else {
         return Err(ApiError::bad_request("member と msg_id は必須です"));
@@ -111,7 +122,7 @@ pub async fn list_favorites(State(st): State<AppState>, RawQuery(q): RawQuery) -
     let before_rowid = p.opt_int("before_rowid")?;
     let member = p.opt("member");
 
-    let favs: Vec<(String, i64, i64, i64)> = st
+    let mut favs: Vec<(String, i64, i64, i64)> = st
         .user_db
         .run(move |c| {
             let mut sql = String::from("SELECT member, msg_id, created_at, rowid FROM favorites WHERE 1=1");
@@ -131,19 +142,25 @@ pub async fn list_favorites(State(st): State<AppState>, RawQuery(q): RawQuery) -
                 }
                 (None, _) => {}
             }
+            // 1件多く読み、続きがあるかを判定する
             sql.push_str(" ORDER BY created_at DESC, rowid DESC LIMIT ?");
-            params.push(Box::new(limit));
+            params.push(Box::new(limit + 1));
             let mut stmt = c.prepare(&sql)?;
             let refs: Vec<&dyn ToSql> = params.iter().map(|b| b.as_ref()).collect();
             let rows = stmt.query_map(refs.as_slice(), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
             rows.collect()
         })
         .await?;
+    // 幽霊を除外すると返す件数が limit より少なくなりうるため、続きの有無は件数ではなく has_more で伝える
+    let has_more = favs.len() as i64 > limit;
+    favs.truncate(limit as usize);
     // 次ページの目印は、肉付けで除外される幽霊も含めた「このページで読んだ最後の行」
     let next_before = favs.last().map(|f| f.2);
     let next_before_rowid = favs.last().map(|f| f.3);
     if favs.is_empty() {
-        return Ok(Json(json!({ "favorites": [], "next_before": null, "next_before_rowid": null })));
+        return Ok(Json(
+            json!({ "favorites": [], "next_before": null, "next_before_rowid": null, "has_more": false }),
+        ));
     }
 
     // index.db と user.db は JOIN できないため、(member, msg_id) で突き合わせる
@@ -175,7 +192,12 @@ pub async fn list_favorites(State(st): State<AppState>, RawQuery(q): RawQuery) -
         obj.insert("comment".into(), json!(comments.get(&key)));
         result.push(v);
     }
-    Ok(Json(json!({ "favorites": result, "next_before": next_before, "next_before_rowid": next_before_rowid })))
+    Ok(Json(json!({
+        "favorites": result,
+        "next_before": next_before,
+        "next_before_rowid": next_before_rowid,
+        "has_more": has_more,
+    })))
 }
 
 pub async fn favorite_ids(State(st): State<AppState>, RawQuery(q): RawQuery) -> ApiResult<Json<Value>> {
@@ -198,10 +220,10 @@ pub async fn update_comment(State(st): State<AppState>, body: Bytes) -> ApiResul
     let (member, msg_id) = member_and_msg_id(&payload)?;
     // 省略・null・空文字(前後の空白を除いた後)での更新は「コメントを消す」
     let comment = opt_string(&payload, "comment")?.filter(|s| !s.is_empty());
-    if let Some(c) = &comment {
-        if c.chars().count() > COMMENT_MAX_LENGTH {
-            return Err(ApiError::bad_request(format!("コメントは{COMMENT_MAX_LENGTH}文字以内で入力してください")));
-        }
+    if let Some(c) = &comment
+        && c.chars().count() > COMMENT_MAX_LENGTH
+    {
+        return Err(ApiError::bad_request(format!("コメントは{COMMENT_MAX_LENGTH}文字以内で入力してください")));
     }
     ensure_message_exists(&st, &member, msg_id).await?;
 
@@ -279,10 +301,11 @@ pub async fn update_member_order(State(st): State<AppState>, body: Bytes) -> Api
     };
     let mut names: Vec<String> = Vec::new();
     for m in members {
-        let Some(name) = m.as_str().map(|s| s.trim().to_string()) else {
+        // メンバー名はフォルダ名そのものなので、前後の空白は削らない
+        let Some(name) = m.as_str().map(str::to_string) else {
             return Err(ApiError::bad_request("members はメンバー名(文字列)の配列で指定してください"));
         };
-        if name.is_empty() {
+        if name.trim().is_empty() {
             return Err(ApiError::bad_request("空のメンバー名は指定できません"));
         }
         if names.contains(&name) {

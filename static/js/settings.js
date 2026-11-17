@@ -153,9 +153,15 @@ export const Settings = {
       }
       this.configured = true;
       qs("#settingsModal").classList.add("hidden");
-      toast("保存先フォルダを設定しました。取り込みを開始します。");
-      Reindex.showRunning({ phase: "scanning", message: "取り込みを開始しています..." });
-      Reindex.startActivePolling();
+      if (data.index_started === false) {
+        // 別の取り込み・削除・初期化の最中で、今回の取り込みは始まっていない
+        // 実行中の処理があれば poll がその進捗を表示する
+        toast("保存先フォルダを設定しました。実行中の処理が終わってから「更新」で取り込んでください。");
+      } else {
+        toast("保存先フォルダを設定しました。取り込みを開始します。");
+        Reindex.showRunning({ phase: "scanning", message: "取り込みを開始しています..." });
+        Reindex.startActivePolling();
+      }
       Reindex.poll();
       await Sidebar.load();
     } catch (e) {

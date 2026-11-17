@@ -1,11 +1,11 @@
 //! 管理系: メンバー削除(DELETE /api/members/{member}) と 初期化(POST /api/reset)。
 //!
-//! どちらも取り込みと相互排他する。取り込み中(自プロセス、または `.index.lock` の PID が生存する別プロセス)なら409。
+//! どちらも取り込みと相互排他する。取り込み中(自プロセス、または `.index.lock` を握る別プロセス)なら409。
 
-use crate::config::write_root;
+use crate::config::{write_root, Config};
 use crate::db::open_index_db;
 use crate::error::{blocking, ApiError, ApiResult};
-use crate::indexlock::peek_running_pid;
+use crate::indexlock::{read_lock_pid, IndexLock};
 use crate::routes::media::safe_resolve_no_exist_check;
 use crate::state::AppState;
 use axum::extract::{Path as AxPath, State};
@@ -16,8 +16,9 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use tokio::sync::OwnedMutexGuard;
 
-/// 取り込みとの排他を確保する。返したガードを持っている間、自プロセスの取り込みは始まらない。
-fn exclusive(st: &AppState) -> ApiResult<OwnedMutexGuard<()>> {
+/// 取り込みとの排他を確保する。返したガードを持っている間、自プロセスの取り込みも、
+/// 別プロセス(CLI)の取り込みも始まらない(確認だけでなく `.index.lock` を実際に握る)。
+fn exclusive(st: &AppState) -> ApiResult<(OwnedMutexGuard<()>, IndexLock)> {
     let guard = st
         .reindex
         .run_lock
@@ -28,10 +29,10 @@ fn exclusive(st: &AppState) -> ApiResult<OwnedMutexGuard<()>> {
         return Err(ApiError::already_running(None));
     }
     let lock_path = st.cfg.read().unwrap().index_lock_path();
-    if let Some(pid) = peek_running_pid(&lock_path) {
-        return Err(ApiError::already_running(Some(format!("index process pid={pid} is running"))));
-    }
-    Ok(guard)
+    let lock = IndexLock::acquire(&lock_path).map_err(|_| {
+        ApiError::already_running(read_lock_pid(&lock_path).map(|pid| format!("index process pid={pid} is running")))
+    })?;
+    Ok((guard, lock))
 }
 
 // ------------------------------------------------------------------ メンバー削除
@@ -41,11 +42,26 @@ fn exclusive(st: &AppState) -> ApiResult<OwnedMutexGuard<()>> {
 ///
 /// 検索索引 messages_fts の行も同時に消す。索引行が孤児として残ると、最後に取り込まれたメンバーを削除して
 /// 再取り込みしたときに rowid が衝突して取り込みが失敗する。
+///
+/// index.db と user.db は別ファイルで1つのトランザクションにできないため、user.db(お気に入り・コメント)→
+/// index.db(メッセージ・検索索引)→ サムネのファイル の順に消す。途中で失敗してもメッセージが残っていれば
+/// メンバーは一覧に出たままなので、画面からもう一度削除すれば最後まで消せる
+/// (逆順だと、メッセージだけ消えて一覧から見えなくなり、お気に入り・コメントが見えないまま残る)。
 pub async fn delete_member(State(st): State<AppState>, AxPath(member): AxPath<String>) -> ApiResult<Json<Value>> {
     if member.is_empty() {
         return Err(ApiError::bad_request("member は必須です"));
     }
     let _guard = exclusive(&st)?;
+
+    let m = member.clone();
+    st.user_db
+        .run(move |c| {
+            let tx = c.unchecked_transaction()?;
+            tx.execute("DELETE FROM favorites WHERE member=?", [&m])?;
+            tx.execute("DELETE FROM message_comments WHERE member=?", [&m])?;
+            tx.commit()
+        })
+        .await?;
 
     let m = member.clone();
     let (deleted, thumbs): (usize, Vec<String>) = st
@@ -74,14 +90,6 @@ pub async fn delete_member(State(st): State<AppState>, AxPath(member): AxPath<St
     })
     .await?;
 
-    let m = member.clone();
-    st.user_db
-        .run(move |c| {
-            c.execute("DELETE FROM favorites WHERE member=?", [&m])?;
-            c.execute("DELETE FROM message_comments WHERE member=?", [&m])
-        })
-        .await?;
-
     Ok(Json(json!({ "status": "ok", "member": member, "deleted_messages": deleted })))
 }
 
@@ -107,50 +115,147 @@ fn with_suffix(p: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(s)
 }
 
+/// 初期化で、消す前に一時的に付ける名前の接尾辞。
+const RESET_TRASH_SUFFIX: &str = ".resetting";
+
+/// 初期化で消すもの(無いものは飛ばす)。.index.lock はこの処理自身が握っているので含めない(PID ファイルは解放時に消える)。
+/// サムネのフォルダは、開かれているファイルがあると名前を変えられないことが多いので最後に置く(戻す数が増えないように)。
+fn reset_targets(cfg: &Config) -> Vec<PathBuf> {
+    let udb = cfg.user_db_path();
+    vec![
+        cfg.db_path.clone(),
+        with_suffix(&cfg.db_path, "-wal"),
+        with_suffix(&cfg.db_path, "-shm"),
+        udb.clone(),
+        with_suffix(&udb, "-wal"),
+        with_suffix(&udb, "-shm"),
+        cfg.progress_json_path(),
+        cfg.thumbs_dir.clone(),
+    ]
+}
+
+fn trash_path(p: &Path) -> PathBuf {
+    with_suffix(p, RESET_TRASH_SUFFIX)
+}
+
+fn exists_no_follow(p: &Path) -> bool {
+    std::fs::symlink_metadata(p).is_ok()
+}
+
+/// ファイルでもフォルダでも消す。無ければ成功扱い。
+fn remove_any(p: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(p) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+        Ok(m) if m.is_dir() => std::fs::remove_dir_all(p),
+        Ok(_) => remove_file_retry(p),
+    }
+}
+
+/// 名前を変える。Windows では閉じ切っていないハンドルがあると失敗しうるため、少しの間だけ再試行する。
+fn rename_retry(from: &Path, to: &Path) -> std::io::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match std::fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(e) if Instant::now() >= deadline => return Err(e),
+            Err(_) => std::thread::sleep(Duration::from_millis(50)),
+        }
+    }
+}
+
+/// 前回の初期化で消し損ねたもの(`*.resetting`)を消す。起動時と初期化の前に呼ぶ。失敗は警告だけ。
+pub fn cleanup_reset_leftovers(cfg: &Config) {
+    for t in reset_targets(cfg) {
+        let tp = trash_path(&t);
+        if exists_no_follow(&tp)
+            && let Err(e) = remove_any(&tp)
+        {
+            logln!("[reset] warning: 前回の初期化の残り {} を削除できませんでした: {e}", tp.display());
+        }
+    }
+}
+
+/// 段階1: 対象をすべて一時的な名前に変える。1つでも変えられなければ、変えた分を戻して Err(何も変わっていない)。
+/// Windows では開かれているファイル(やそれを含むフォルダ)は名前も変えられないので、何かを消す前に失敗を検知できる。
+fn move_aside(targets: &[PathBuf]) -> std::io::Result<Vec<PathBuf>> {
+    let mut moved = Vec::new();
+    for t in targets {
+        if !exists_no_follow(t) {
+            continue;
+        }
+        if let Err(e) = rename_retry(t, &trash_path(t)) {
+            restore(&moved);
+            return Err(std::io::Error::new(e.kind(), format!("{} を移動できませんでした: {e}", t.display())));
+        }
+        moved.push(t.clone());
+    }
+    Ok(moved)
+}
+
+/// `move_aside` で名前を変えたものを元に戻す。
+fn restore(moved: &[PathBuf]) {
+    for t in moved.iter().rev() {
+        if let Err(e) = std::fs::rename(trash_path(t), t) {
+            logln!("[reset] error: {} を元に戻せませんでした: {e}", t.display());
+        }
+    }
+}
+
+/// 空の状態を作る(サムネのフォルダ・index.db のスキーマ・設定ファイルの root を空に)。
+/// user.db は次の利用時に空のスキーマで開き直される。
+fn create_fresh(cfg: &Config) -> std::io::Result<()> {
+    std::fs::create_dir_all(&cfg.thumbs_dir)?;
+    open_index_db(&cfg.db_path, true).map_err(std::io::Error::other)?;
+    // 一時ファイルに書いてから置き換えるので、失敗しても設定ファイルは元のまま
+    write_root(cfg, "").map_err(std::io::Error::other)?;
+    Ok(())
+}
+
 /// DB・サムネ・お気に入り等・保存フォルダ設定をすべて消し、初回起動相当に戻す(取り消し不可)。
+///
+/// 途中で失敗して中途半端に消えた状態を残さないよう、2段階で行う。
+/// 1. 消す対象をすべて一時的な名前(`*.resetting`)に変え、空の状態を作って設定ファイルの root を空にする。
+///    どこかで失敗したら、作りかけを消して名前を元に戻す(何も変わっていない状態で 500)。
+/// 2. 一時的な名前のものを消す。消し損ねても初期化は済んでいて、残りは次の初期化・起動時に消す。
 pub async fn reset(State(st): State<AppState>) -> ApiResult<Json<Value>> {
     let _guard = exclusive(&st)?;
     let cfg = st.cfg.read().unwrap().clone();
 
-
     let st2 = st.clone();
-    blocking(move || -> std::io::Result<()> {
-        // index.db は全接続を閉じ、新しい接続を作らせない状態で消して作り直す
-        st2.db.while_closed(|| -> std::io::Result<()> {
-            for p in [cfg.db_path.clone(), with_suffix(&cfg.db_path, "-wal"), with_suffix(&cfg.db_path, "-shm")] {
-                remove_file_retry(&p)?;
-            }
-            open_index_db(&cfg.db_path, true).map_err(std::io::Error::other)?;
-            Ok(())
+    blocking(move || -> Result<(), String> {
+        cleanup_reset_leftovers(&cfg);
+        let targets = reset_targets(&cfg);
+        // 両方の DB の接続を閉じ、新しい接続を作らせない状態で行う(Windows では開いたままだと名前を変えられない)
+        st2.db.while_closed(|| {
+            st2.user_db.while_closed(|| -> Result<(), String> {
+                let moved = move_aside(&targets).map_err(|e| format!("初期化できませんでした(何も変更していません): {e}"))?;
+                if let Err(e) = create_fresh(&cfg) {
+                    // 作りかけ(新しい index.db・サムネのフォルダ)を消して元に戻す。
+                    // 対象のうち実在したものはすべて名前を変えてあるので、今ある対象は作りかけだけ
+                    for t in &targets {
+                        if let Err(e) = remove_any(t) {
+                            logln!("[reset] error: 作りかけの {} を削除できませんでした: {e}", t.display());
+                        }
+                    }
+                    restore(&moved);
+                    return Err(format!("初期化できませんでした(何も変更していません): {e}"));
+                }
+                Ok(())
+            })
         })?;
-
-        if cfg.thumbs_dir.exists() {
-            std::fs::remove_dir_all(&cfg.thumbs_dir)?;
-        }
-        std::fs::create_dir_all(&cfg.thumbs_dir)?;
-
-        for p in [cfg.progress_json_path(), cfg.index_lock_path()] {
-            remove_file_retry(&p)?;
-        }
-
-        // user.db は接続を閉じたままロックを握って消す(途中で他のリクエストが開き直さないように)。
-        // 次の利用時に空のスキーマで開き直される
-        let udb = cfg.user_db_path();
-        st2.user_db.while_closed(|| {
-            for p in [udb.clone(), with_suffix(&udb, "-wal"), with_suffix(&udb, "-shm")] {
-                remove_file_retry(&p)?;
+        for t in &targets {
+            let tp = trash_path(t);
+            if let Err(e) = remove_any(&tp) {
+                logln!("[reset] warning: {} を削除できませんでした(次の初期化・起動時に再度消します): {e}", tp.display());
             }
-            Ok(())
-        })
+        }
+        Ok(())
     })
     .await?
     .map_err(ApiError::internal)?;
 
-    {
-        let mut c = st.cfg.write().unwrap();
-        write_root(&c, "").map_err(ApiError::internal)?;
-        c.root = None;
-    }
+    st.cfg.write().unwrap().root = None;
     st.reindex.clear_status();
     Ok(Json(json!({ "status": "reset" })))
 }

@@ -125,13 +125,34 @@ fn run_with_timeout(mut cmd: Command, limit: std::time::Duration) -> Result<(boo
 
 /// 書きかけのサムネの置き場所(`6.jpg` → `6.part.jpg`)。ffmpeg は拡張子で出力形式を決めるため `.jpg` で終える。
 fn temp_path(dst: &Path) -> PathBuf {
-    let stem = dst.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let stem = dst.file_stem().map_or_default(|s| s.to_string_lossy().into_owned());
     dst.with_file_name(format!("{stem}.part.jpg"))
 }
 
 /// 使えるサムネが既にあるか。0バイト(以前の版が書き込み途中で失敗して残したもの)は無いものとして作り直す。
 pub fn thumb_exists(dst: &Path) -> bool {
     std::fs::metadata(dst).is_ok_and(|m| m.is_file() && m.len() > 0)
+}
+
+/// 生成に失敗した印(`6.jpg` → `6.failed`)。中身は失敗したときの元ファイルの大きさと更新日時。
+fn failed_marker_path(dst: &Path) -> PathBuf {
+    dst.with_extension("failed")
+}
+
+fn source_signature(src: &Path) -> Option<String> {
+    let m = std::fs::metadata(src).ok()?;
+    let mtime = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
+    Some(format!("{}:{mtime}", m.len()))
+}
+
+/// 同じ元ファイル(大きさ・更新日時が同じ)から前回作れなかったか。
+/// 壊れた画像や読めない動画を、取り込みのたびに作り直そうとしない(動画は1件で最大60秒かかる)。
+/// 元ファイルが差し替えられれば、印と食い違うので作り直す。
+pub fn failed_before(dst: &Path, src: &Path) -> bool {
+    match (std::fs::read_to_string(failed_marker_path(dst)), source_signature(src)) {
+        (Ok(mark), Some(sig)) => mark.trim() == sig,
+        _ => false,
+    }
 }
 
 /// 1件生成する。失敗しても取り込み全体は止めない(呼び出し側で警告を出す)。
@@ -150,10 +171,24 @@ pub fn generate(job: &ThumbJob, size: u32, quality: u8, ffmpeg: Option<&Path>) -
         ThumbKind::Video => gen_video_thumb(&job.src, &tmp, size, ffmpeg),
     }
     .and_then(|()| std::fs::rename(&tmp, &job.dst).map_err(|e| e.to_string()));
-    if res.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+    let marker = failed_marker_path(&job.dst);
+    match &res {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&marker);
+        }
+        Err(_) => {
+            let _ = std::fs::remove_file(&tmp);
+        }
     }
     res
+}
+
+/// 生成に失敗した印を残す(`failed_before` で、同じ元ファイルからの作り直しを避ける)。
+/// デコーダの panic も失敗として扱えるよう、呼び出し側が `generate` の外で呼ぶ。
+pub fn mark_failed(job: &ThumbJob) {
+    if let Some(sig) = source_signature(&job.src) {
+        let _ = std::fs::write(failed_marker_path(&job.dst), sig);
+    }
 }
 
 /// ffmpeg の場所。探索順: 設定ファイルのディレクトリ → 実行ファイルのディレクトリ(それぞれ `bin/` → 直下) → PATH。
@@ -261,6 +296,14 @@ mod tests {
         let broken = ThumbJob { src: dir.join("broken.jpg"), dst: dir.join("b.jpg"), kind: ThumbKind::Image };
         assert!(generate(&broken, 240, 80, None).is_err());
         assert!(!broken.dst.exists() && !temp_path(&broken.dst).exists());
+        // 失敗の印: 同じ元ファイルなら作り直さない。元ファイルが変われば作り直す。成功すれば印は消える
+        assert!(!failed_before(&broken.dst, &broken.src));
+        mark_failed(&broken);
+        assert!(failed_before(&broken.dst, &broken.src));
+        image::RgbImage::from_pixel(10, 10, image::Rgb([1, 2, 3])).save(&broken.src).unwrap();
+        assert!(!failed_before(&broken.dst, &broken.src), "差し替えられた元ファイルは作り直す");
+        generate(&broken, 240, 80, None).unwrap();
+        assert!(!failed_marker_path(&broken.dst).exists());
         // 0バイトのサムネは「無い」扱い(作り直しの対象)
         std::fs::write(dir.join("empty.jpg"), b"").unwrap();
         assert!(!thumb_exists(&dir.join("empty.jpg")));

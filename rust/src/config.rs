@@ -104,10 +104,10 @@ pub fn default_config_path() -> PathBuf {
 pub fn load_config(config_path: Option<&Path>) -> Result<Config, String> {
     let path = config_path.map(Path::to_path_buf).unwrap_or_else(default_config_path);
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let raw: RawConfig = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    let raw: RawConfig = serde_json::from_str(strip_bom(&text)).map_err(|e| format!("{}: {e}", path.display()))?;
 
     let abs = if path.is_absolute() { path.clone() } else { std::env::current_dir().map_err(|e| e.to_string())?.join(&path) };
-    let base = normalize_lexical(&abs).parent().map(Path::to_path_buf).unwrap_or_default();
+    let base = normalize_lexical(&abs).parent().map_or_default(Path::to_path_buf);
 
     let root = env_or("MSGVIEWER_ROOT", raw.root);
     let data_dir = env_or("MSGVIEWER_DATA_DIR", raw.data_dir);
@@ -141,12 +141,53 @@ pub fn load_config(config_path: Option<&Path>) -> Result<Config, String> {
 
 /// 設定ファイルの `root` だけを書き換える(他のキーと順序は保つ)。
 /// 2スペースのインデント + 末尾改行で書く。キー順を保つため serde_json の `preserve_order` feature を有効にしている。
+/// 先頭の BOM を除く(メモ帳の「UTF-8 (BOM 付き)」で保存した設定ファイルも読めるように)。
+fn strip_bom(text: &str) -> &str {
+    text.trim_prefix('\u{feff}')
+}
+
 pub fn write_root(cfg: &Config, new_root: &str) -> Result<(), String> {
     let text = std::fs::read_to_string(&cfg.config_path).map_err(|e| e.to_string())?;
-    let mut v: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let mut v: Value = serde_json::from_str(strip_bom(&text)).map_err(|e| e.to_string())?;
     let obj: &mut Map<String, Value> = v.as_object_mut().ok_or("config is not an object")?;
     obj.insert("root".into(), Value::String(new_root.into()));
     let mut out = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
     out.push('\n');
-    std::fs::write(&cfg.config_path, out).map_err(|e| e.to_string())
+    // 一時ファイルに書き切ってから置き換える。直接書くと、途中で落ちたときに空や書きかけの設定ファイルが残り、
+    // 次回起動できなくなる
+    let mut tmp = cfg.config_path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    let res = std::fs::write(&tmp, out).and_then(|()| std::fs::rename(&tmp, &cfg.config_path));
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    res.map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// BOM 付き UTF-8(メモ帳の「UTF-8 (BOM 付き)」)の設定ファイルも読め、root の書き戻しもできる。
+    #[test]
+    fn bom_config_and_atomic_write() {
+        let dir = std::env::temp_dir().join(format!("mv_cfg_bom_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let body = r#"{"root": "", "data_dir": "./data", "thumbs_dir": "./data/thumbs", "db_path": "./data/index.db",
+            "port": 8000, "thumb_size": 240, "thumb_quality": 80, "incremental_months": 2, "auto_index_on_startup": false}"#;
+        std::fs::write(&path, format!("\u{feff}{body}")).unwrap();
+        let cfg = load_config(Some(&path)).unwrap();
+        assert_eq!(cfg.port, 8000);
+        write_root(&cfg, "C:/x").unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["root"], "C:/x");
+        assert_eq!(v["port"], 8000);
+        let mut tmp = path.as_os_str().to_owned();
+        tmp.push(".tmp");
+        assert!(!PathBuf::from(tmp).exists(), "一時ファイルは残らない");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

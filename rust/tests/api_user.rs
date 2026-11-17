@@ -104,6 +104,32 @@ fn favorites_hides_ghosts() {
     drop(db);
     assert_eq!(pairs(&srv.get_json("/api/favorites", &[])["favorites"]), [p("member_b", 1)]);
     assert_eq!(sorted_ids(&srv, "member_b"), [1, 999]);
+
+    // 幽霊だけのページでも、続きがあることは has_more で分かる(件数で判断すると、ここで読み込みが止まる)
+    let d = srv.get_json("/api/favorites", &[("limit", "1")]);
+    assert_eq!((d["favorites"].clone(), d["has_more"].clone()), (json!([]), json!(true)));
+    let d = srv.get_json(
+        "/api/favorites",
+        &[("limit", "1"), ("before", &d["next_before"].to_string()), ("before_rowid", &d["next_before_rowid"].to_string())],
+    );
+    assert_eq!(pairs(&d["favorites"]), [p("member_b", 1)]);
+    assert_eq!(d["has_more"], json!(false));
+}
+
+/// フォルダ名の前後に空白(全角を含む)があるメンバーにも、お気に入り・コメントを付けられる。
+#[test]
+fn member_name_with_surrounding_space() {
+    let srv = Server::indexed();
+    let name = "\u{3000}member_d";
+    let dir = srv.root.join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("1_0_20260801000000.txt"), "全角スペースのメンバー").unwrap();
+    srv.reindex_full_ok();
+    assert_eq!(srv.post("/api/favorites", &json!({ "member": name, "msg_id": 1 })).status, 200);
+    assert_eq!(sorted_ids(&srv, name), [1]);
+    let r = srv.put("/api/comments", &json!({ "member": name, "msg_id": 1, "comment": "メモ" }));
+    assert_eq!(r.status, 200);
+    assert_eq!(pairs(&srv.get_json("/api/favorites", &[("member", name)])["favorites"]), [p(name, 1)]);
 }
 
 // ------------------------------------------------------------------ コメント
@@ -171,8 +197,11 @@ fn member_order() {
     let set = |body: Value| srv.put("/api/member-order", &body);
     let get = || srv.get_json("/api/member-order", &[]);
     assert_eq!(get(), json!({ "members": [] }));
-    assert_eq!(set(json!({ "members": ["member_b", " member_a "] })).json(), json!({ "status": "ok", "count": 2 }));
-    assert_eq!(get(), json!({ "members": ["member_b", "member_a"] })); // 空白除去・指定順
+    assert_eq!(set(json!({ "members": ["member_b", "member_a"] })).json(), json!({ "status": "ok", "count": 2 }));
+    assert_eq!(get(), json!({ "members": ["member_b", "member_a"] })); // 指定順
+    // メンバー名はフォルダ名そのものなので、前後の空白(全角を含む)も名前の一部として保つ
+    set(json!({ "members": ["\u{3000}member_d", "member_a"] }));
+    assert_eq!(get(), json!({ "members": ["\u{3000}member_d", "member_a"] }));
     set(json!({ "members": ["member_a"] })); // 全体を置き換える
     assert_eq!(get(), json!({ "members": ["member_a"] }));
     assert_eq!(set(json!({ "members": ["x", "x"] })).status, 400);
@@ -197,7 +226,10 @@ fn payload_types() {
     }
     let r = fav(json!({ "member": "member_a", "msg_id": "3" }));
     assert_eq!(r.json(), json!({ "detail": "msg_id は整数で指定してください" }));
-    assert_eq!(fav(json!({ "member": "  member_a  ", "msg_id": 2 })).status, 200); // member は前後の空白を除く
+    assert_eq!(fav(json!({ "member": "member_a", "msg_id": 2 })).status, 200);
+    // member は前後の空白を削らない(フォルダ名そのもの)。空白付きの名前は別のメンバー = メッセージ無し
+    assert_eq!(fav(json!({ "member": "  member_a  ", "msg_id": 2 })).status, 404);
+    assert_eq!(fav(json!({ "member": "\u{3000}", "msg_id": 2 })).status, 400); // 空白だけは未指定扱い
     let r = fav(json!({ "member": 123, "msg_id": 1 }));
     assert_eq!((r.status, r.json()), (400, json!({ "detail": "member は文字列で指定してください" })));
     assert_eq!(srv.send_raw("POST", "/api/favorites", b"not json").status, 422);

@@ -2,22 +2,35 @@
 
 ## サーバ起動・インデックス構築（CLI直接実行）
 
-Windowsでは基本的に `.bat` ファイル経由で実行する（詳細は [docs/batch-files.md](batch-files.md) を参照）。手動で実行する場合は以下。
+普段はサーバの起動も取り込みも、`message-viewer.exe` のダブルクリックと Web UI で行える（詳細は [docs/batch-files.md](batch-files.md) を参照）。コマンドラインから実行する場合は以下。
 
 設定ファイルは `--config` で指定する（省略時は実行ファイルと同じ場所の `config-dev.json` → `config.json`）。
 
 ```powershell
 .\message-viewer.exe                                   # サーバ起動
-.\message-viewer.exe index                             # 直近2ヶ月分のみ差分取り込み（既定）
+.\message-viewer.exe index                             # 直近 incremental_months ヶ月分の差分取り込み（既定。--incremental と同じ）
 .\message-viewer.exe index --full                      # 全件走査
-.\message-viewer.exe index --rebuild                   # DBを作り直して全件走査
-.\message-viewer.exe index --only-member "メンバー名"          # 特定メンバーのみ（直近2ヶ月分）
+.\message-viewer.exe index --rebuild                   # index.db を作り直して全件走査（サーバを止めてから）
+.\message-viewer.exe index --only-member "メンバー名"          # 特定メンバーのみ（直近 incremental_months ヶ月分）
 .\message-viewer.exe index --full --only-member "メンバー名"   # 同上、全期間
 .\message-viewer.exe index --no-thumbs                 # サムネ生成をスキップ
 .\message-viewer.exe --config D:\other\config.json      # 別の設定ファイルで起動
 ```
 
-取り込みは `data\.index.lock` で排他されるため、サーバ内の取り込みと CLI の取り込みが同時に走ることはない（既に実行中なら終了コード2で終了する）。
+- 差分取り込みの期間は設定の `incremental_months`（配布版の既定は2）。ただし、まだ取り込んだことの無いメンバーは差分取り込みでも全期間を走査する
+- `--rebuild` が作り直すのは `index.db`（メッセージと検索索引）だけ。`user.db`（お気に入り・コメント・非表示・並び順）とサムネイルは残る。
+  - サーバ起動中（設定のポートが使用中）は実行できない（サーバが `index.db` を開いているため）。サーバを止めてから実行する
+  - `--only-member` とは併用できない（DB 全体を消すため、他のメンバーまで消えてしまう）。特定メンバーを取り込み直すには `--full --only-member` を使う
+
+取り込みは `data\.index.lock` の OS ファイルロックで排他されるため、サーバ内の取り込み・メンバー削除・初期化と CLI の取り込みが同時に走ることはない。
+
+終了コード（`index`）:
+
+| コード | 意味 |
+| --- | --- |
+| 0 | 成功 |
+| 1 | 失敗（設定ファイルを読めない、`root` 未設定、`--rebuild` の拒否・DB を削除できない など） |
+| 2 | 既に取り込みなどが実行中（`.index.lock` を取れなかった） |
 
 `auto_index_on_startup: true` の場合、起動時にバックグラウンドで差分取り込みが自動実行される（サーバ応答はブロックしない）。
 
@@ -43,6 +56,6 @@ cargo test --manifest-path rust\Cargo.toml
 | `api_smoke.rs` | 起動・設定・外部アクセス対策（Host・Sec-Fetch-Site・Origin） |
 | `api_read.rs` | threads / messages / search / jump / calendar / media-list |
 | `api_user.rs` | お気に入り・コメント・非表示メンバー・並び順 |
-| `api_media_admin.rs` | `/media`・`/thumbs` の配信（Range・キャッシュ）、取り込み、メンバー削除、初期化 |
+| `api_media_admin.rs` | `/media`・`/thumbs` の配信（Range・キャッシュ）、取り込み、メンバー削除、初期化、CLI の `index --rebuild` |
 
 [← READMEに戻る](../README.md)
