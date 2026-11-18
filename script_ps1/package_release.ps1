@@ -35,13 +35,11 @@ $stage = Join-Path (Get-Location) "dist\$name"
 $zip = Join-Path (Get-Location) "dist\$name.zip"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 if (Test-Path $zip) { Remove-Item $zip -Force }
-New-Item -ItemType Directory -Force (Join-Path $stage 'script_ps1') | Out-Null
+New-Item -ItemType Directory -Force $stage | Out-Null
 
 Copy-Item '.\rust\target\release\message-viewer.exe' $stage
 Copy-Item '.\config.json' $stage
 Copy-Item '.\static' $stage -Recurse
-Copy-Item '.\MoveFiles.bat' $stage
-Copy-Item '.\script_ps1\MoveFiles.ps1', '.\script_ps1\MergeDatedFolders.ps1' (Join-Path $stage 'script_ps1')
 Copy-Item '.\README.md', '.\LICENSE' $stage
 Copy-Item '.\docs\release\README.txt' $stage
 

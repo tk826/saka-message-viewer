@@ -27,7 +27,6 @@ zip の中は `saka-message-viewer-<版>-windows-x64\` フォルダが1つあり
 | `message-viewer.exe` | サーバ本体（Visual C++ ランタイム・SQLite を組み込み済み） |
 | `config.json` | 設定（`root` は空。初回にブラウザの設定画面で指定する） |
 | `static\` | 画面 |
-| `MoveFiles.bat`, `script_ps1\MoveFiles.ps1`, `script_ps1\MergeDatedFolders.ps1` | 保存フォルダの整形（任意） |
 | `README.txt` | 配布版の使い方（[docs/release/README.txt](release/README.txt)） |
 | `README.md`, `LICENSE` | |
 

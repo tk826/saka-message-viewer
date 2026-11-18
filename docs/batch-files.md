@@ -17,11 +17,8 @@
 ```powershell
 cd \message-viewer
 
-.\build_rust.bat                # ビルド（初回とソース更新時）。message-viewer.exe をプロジェクト直下に置く
-.\MoveFiles.bat "C:\messages"   # 日付付きフォルダの統合 + {YYYY}/{YYYYMM}/ 階層への整形（任意）
+.\build_rust.bat   # ビルド（初回とソース更新時）。message-viewer.exe をプロジェクト直下に置く
 ```
-
-日付付きフォルダの統合だけを単独で行いたい場合は `script_ps1\MergeDatedFolders.ps1` を直接実行する（`.bat` ラッパーは無い）。
 
 取り込み（全期間・メンバー個別・未生成サムネイルの作成）はWeb UIの設定（&#9881;）→「取り込み」タブから実行する。CLIで行う場合は [docs/cli.md](cli.md) を参照。
 
