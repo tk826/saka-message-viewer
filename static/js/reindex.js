@@ -69,6 +69,14 @@ export const Reindex = {
     try {
       const res = await fetch("/api/reindex", { method: "POST" });
       if (res.status === 409) {
+        const data = await res.json().catch(() => ({}));
+        if (data.status !== "already_running") {
+          // 保存先フォルダが未設定など、実行中ではない理由。実行中として追うと、
+          // 状態が「実行していない」なので「更新が完了しました」と誤って表示してしまう
+          throw new Error(data.status === "root_not_configured"
+            ? "保存先フォルダが設定されていません"
+            : (data.detail || data.status || "HTTP 409"));
+        }
         toast("すでに実行中です");
         this.startActivePolling();
         this.poll();

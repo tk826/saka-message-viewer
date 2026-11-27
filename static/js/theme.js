@@ -2,12 +2,14 @@
 /* ==========================================================================
    テーマ
    ========================================================================== */
-import { qs } from "./utils.js";
+import { qs, safeStorage } from "./utils.js";
 
 export const Theme = {
   KEY: "msgviewer_theme",
   init() {
-    const saved = localStorage.getItem(this.KEY);
+    // サイトのデータ保存を禁止したブラウザでは localStorage が例外を投げる。
+    // ここで止まると App.init 全体が止まり、アプリが起動しなくなるため safeStorage を使う
+    const saved = safeStorage.get(this.KEY);
     if (saved === "light" || saved === "dark") {
       document.documentElement.setAttribute("data-theme", saved);
     }
@@ -23,10 +25,10 @@ export const Theme = {
   set(value) {
     if (value === "light" || value === "dark") {
       document.documentElement.setAttribute("data-theme", value);
-      localStorage.setItem(this.KEY, value);
+      safeStorage.set(this.KEY, value);
     } else {
       document.documentElement.removeAttribute("data-theme");
-      localStorage.removeItem(this.KEY);
+      safeStorage.remove(this.KEY);
     }
   },
 };

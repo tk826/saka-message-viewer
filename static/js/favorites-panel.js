@@ -2,7 +2,7 @@
 /* ==========================================================================
    お気に入り一覧パネル
    ========================================================================== */
-import { qs, ce, escapeHtml, fetchJson, toast, formatLastTs, formatTime } from "./utils.js";
+import { qs, ce, escapeHtml, fetchJson, toast, formatLastTs, formatTime, makeKeyboardClickable } from "./utils.js";
 import { applyNicknamePlaceholder } from "./display-prefs.js";
 import { Sidebar } from "./sidebar.js";
 import { Favorites } from "./favorites.js";
@@ -15,6 +15,9 @@ export const FavoritesPanel = {
   oldestCreatedAt: null,
   oldestRowid: null,  // oldestCreatedAt と組で続きの目印にする(同じ秒に登録したものの取りこぼし防止)
   PAGE_SIZE: 50,
+  // 一覧の世代。reload のたびに進め、応答が届いた時点で変わっていればその応答は捨てる
+  // (追加読み込み中に閉じて開き直したとき・別のメンバーで開き直したときに、前の一覧の続きを混ぜない)
+  _gen: 0,
 
   init() {
     qs("#favoritesBtn").addEventListener("click", () => this.toggle());
@@ -51,6 +54,8 @@ export const FavoritesPanel = {
   },
 
   async reload() {
+    const gen = ++this._gen;
+    this.loading = false;
     this.hasMore = true;
     this.oldestCreatedAt = null;
     this.oldestRowid = null;
@@ -58,9 +63,11 @@ export const FavoritesPanel = {
     body.innerHTML = `<div class="hint">読み込み中...</div>`;
     try {
       const data = await fetchJson(`/api/favorites?limit=${this.PAGE_SIZE}&member=${encodeURIComponent(Sidebar.selectedMember)}`);
+      if (gen !== this._gen) return;
       body.innerHTML = "";
       this.appendPage(data);
     } catch (e) {
+      if (gen !== this._gen) return;
       console.error(e);
       body.innerHTML = `<div class="hint">読み込みに失敗しました: ${escapeHtml(e.message)}</div>`;
       return;
@@ -93,16 +100,19 @@ export const FavoritesPanel = {
 
   async loadMore() {
     if (this.loading || !this.hasMore || this.oldestCreatedAt == null) return;
+    const gen = this._gen;
     this.loading = true;
     let ok = false;
     try {
       const data = await fetchJson(`/api/favorites?limit=${this.PAGE_SIZE}&before=${this.oldestCreatedAt}&before_rowid=${this.oldestRowid}&member=${encodeURIComponent(Sidebar.selectedMember)}`);
+      if (gen !== this._gen) return;
       this.appendPage(data);
       ok = true;
     } catch (e) {
+      if (gen !== this._gen) return;
       console.error(e);
     } finally {
-      this.loading = false;
+      if (gen === this._gen) this.loading = false;
     }
     if (ok) {
       this.showEmptyHintIfDone();
@@ -126,6 +136,10 @@ export const FavoritesPanel = {
       img.loading = "lazy";
       img.src = thumbSrc;
       img.alt = "";
+      // サムネが読めなければ(取り込みの途中で止まったなど)元のファイルを出す
+      if (f.thumb_url && f.kind === "image" && f.media_url) {
+        img.addEventListener("error", () => { img.src = f.media_url; }, { once: true });
+      }
       item.appendChild(img);
     }
 
@@ -176,6 +190,7 @@ export const FavoritesPanel = {
       const { App } = await import("./app.js");
       App.jumpToMessage(f.member, f.ts, f.msg_id);
     });
+    makeKeyboardClickable(item, `${f.member} ${formatLastTs(f.ts)} ${formatTime(f.ts)} のメッセージへ移動`);
 
     return item;
   },

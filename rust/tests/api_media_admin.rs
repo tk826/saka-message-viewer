@@ -504,18 +504,29 @@ fn delete_and_reset_refuse_while_other_indexer_runs() {
     assert_eq!(srv.get_json("/api/threads", &[]).as_array().unwrap().len(), 2); // 何も消えていない
 }
 
-/// 別プロセスの取り込み中に保存フォルダを設定すると、保存はするが取り込みは始めず index_started=false。
+/// 別プロセスの取り込み中は、保存フォルダを設定できない(409。実行中の取り込みは古い root のまま走るため)。
+/// 何も保存せず、取り込みも始めない。
 #[test]
-fn settings_does_not_start_reindex_while_other_indexer_runs() {
+fn settings_refuses_while_other_indexer_runs() {
     let srv = Server::start();
-    let _lock = hold_index_lock(&srv, std::process::id());
+    let me = std::process::id();
+    let before = srv.config_json()["root"].clone();
+    {
+        let _lock = hold_index_lock(&srv, me);
+        let root = srv.root.to_string_lossy().into_owned();
+        let r = srv.post("/api/settings", &json!({ "root": root }));
+        assert_eq!(r.status, 409);
+        assert_eq!(r.json(), json!({ "status": "already_running", "detail": format!("index process pid={me} is running") }));
+        assert_eq!(srv.config_json()["root"], before); // 保存しない
+        let st = srv.get_json("/api/reindex/status", &[]);
+        assert_eq!(st["last_error"], Value::Null); // バックグラウンドで already_running にもなっていない
+    }
+    // 取り込みが終われば設定できる
     let root = srv.root.to_string_lossy().into_owned();
     let r = srv.post("/api/settings", &json!({ "root": root }));
     assert_eq!(r.status, 200);
-    assert_eq!(r.json()["index_started"], json!(false));
-    assert_eq!(srv.config_json()["root"], json!(root)); // 保存はされる
-    let st = srv.get_json("/api/reindex/status", &[]);
-    assert_eq!(st["last_error"], Value::Null); // バックグラウンドで already_running にもなっていない
+    assert_eq!(r.json()["root_env_override"], json!(false));
+    assert_eq!(srv.config_json()["root"], json!(root));
 }
 
 // --------------------------------------------------------------- CLI
@@ -580,7 +591,7 @@ fn reset() {
     assert_eq!(srv.get(&thumb).status, 200);
 
     let r = srv.post("/api/reset", &json!({}));
-    assert_eq!((r.status, r.json()), (200, json!({ "status": "reset" })));
+    assert_eq!((r.status, r.json()), (200, json!({ "status": "reset", "root_env_override": false })));
     assert_eq!(srv.get_json("/api/threads", &[]), json!([]));
     assert_eq!(srv.get_json("/api/favorites", &[])["favorites"], json!([]));
     assert_eq!(srv.get_json("/api/hidden-members", &[]), json!({ "members": [] }));

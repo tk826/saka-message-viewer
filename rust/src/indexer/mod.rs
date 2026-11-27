@@ -285,7 +285,9 @@ fn rebuild_db(db_path: &Path) -> Result<(), IndexError> {
 /// 取り込みを実行する。多重実行は `IndexError::AlreadyRunning`(待たない)。
 pub fn run_index(cfg: &Config, opts: &IndexOptions, progress_cb: Option<ProgressCb>) -> Result<IndexSummary, IndexError> {
     let start = Instant::now();
-    let lock = IndexLock::acquire(&cfg.index_lock_path()).map_err(IndexError::AlreadyRunning)?;
+    let lock = IndexLock::acquire(&cfg.index_lock_path()).map_err(|e| {
+        if e.io_error { IndexError::Failed(e.to_string()) } else { IndexError::AlreadyRunning(e) }
+    })?;
     // 進捗ファイルはロックを取れてから作る(実行中の他プロセスの進捗を上書きしないため)
     let writer = ProgressFileWriter::new(&cfg.progress_json_path(), &opts.mode);
 
@@ -414,7 +416,8 @@ fn run_locked(
     let mut done: u64 = 0;
     let workers = scan::default_workers();
 
-    conn.execute_batch("BEGIN")?;
+    // IMMEDIATE で始める(DEFERRED だと、読んでから書くときに他の書き手と競合して、待たずに SQLITE_BUSY で失敗しうる)
+    conn.execute_batch("BEGIN IMMEDIATE")?;
     // 本文の読み込み(I/O 待ち)は並列に、DB 書き込みは順に行う。順序は保つ(走査順が rowid の順になる)
     for chunk in grouped.chunks(512) {
         let built: Vec<Result<NewRow, String>> = parallel_map(chunk, workers, |((m, id), files)| build_row(m, *id, files));
@@ -440,7 +443,7 @@ fn run_locked(
             if done.is_multiple_of(500) || done == total {
                 conn.execute_batch("COMMIT")?;
                 checkpoint_if_wal_large(&conn, &cfg.db_path)?;
-                conn.execute_batch("BEGIN")?;
+                conn.execute_batch("BEGIN IMMEDIATE")?;
             }
         }
     }
@@ -454,7 +457,7 @@ fn run_locked(
     // 見つかった行は取り込み時に missing=0 に戻しているので、範囲外として飛ばしても見落としは起きない
     report("missing_check", Map::new());
     let mut missing_updates = 0u64;
-    conn.execute_batch("BEGIN")?;
+    conn.execute_batch("BEGIN IMMEDIATE")?;
     for member in &scope.members {
         let months = &scope.member_yearmonths[member];
         let rows: Vec<(i64, i64, String, i64)> = {
@@ -492,14 +495,27 @@ fn run_locked(
         logln!("[index] generating {n} thumbnails");
         let console = Mutex::new(ConsoleReporter::new("thumbs"));
         let state = Mutex::new((0u64, 0u64)); // (done, ok)
-        let failed: Mutex<Vec<String>> = Mutex::new(Vec::new()); // 作れなかったサムネのキー
         let all = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
         // 送り待ちの上限(メモリを抑える。書き込みが詰まったら生成側が待つ)
         let (tx, rx) = std::sync::mpsc::sync_channel::<thumbs::Outcome>(256);
         // 書き込みが失敗したら、残りは作っても保存できないので作らない
         let writer_failed = AtomicBool::new(false);
+        let db_path = &cfg.db_path;
         let written = std::thread::scope(|s| {
-            let writer = s.spawn(move || thumbs::write_outcomes(&tconn, &rx));
+            // thumbs.db に保存できた分だけ、続けて messages.thumb を設定する
+            // (index.db の接続はスレッドをまたげないので、書き込みスレッドで開く)
+            let writer = s.spawn(move || -> rusqlite::Result<()> {
+                let iconn = open_index_db(db_path, false)?;
+                thumbs::write_outcomes(&tconn, &rx, |made| {
+                    thumbs::in_transaction(&iconn, || {
+                        let mut stmt = iconn.prepare_cached("UPDATE messages SET thumb=? WHERE member=? AND msg_id=?")?;
+                        for (member, msg_id, rel) in made {
+                            stmt.execute(params![rel, member, msg_id])?;
+                        }
+                        Ok(())
+                    })
+                })
+            });
             parallel_for(&thumb_jobs, all, |job| {
                 if writer_failed.load(Ordering::Relaxed) {
                     return;
@@ -510,10 +526,16 @@ fn run_locked(
                         .unwrap_or_else(|payload| Err(format!("internal error: {}", panic_message(&*payload))));
                 let ok = res.is_ok();
                 let outcome = match res {
-                    Ok(data) => thumbs::Outcome::Made { rel: job.rel.clone(), data },
+                    Ok(data) => thumbs::Outcome::Made {
+                        rel: job.rel.clone(),
+                        data,
+                        sig: thumbs::source_signature(&job.src),
+                        member: job.member.clone(),
+                        msg_id: job.msg_id,
+                    },
                     Err(e) => {
+                        // thumb は空のまま(画面は元のメディアを表示する)
                         logln!("[warn] thumb failed for {}: {e}", job.src.display());
-                        failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(job.rel.clone());
                         thumbs::Outcome::Failed { rel: job.rel.clone(), sig: thumbs::source_signature(&job.src) }
                     }
                 };
@@ -542,16 +564,6 @@ fn run_locked(
             }
         });
         summary.thumb_count = state.into_inner().unwrap().1;
-
-        // 作れなかったサムネは thumb を空にする(存在しないサムネを指したままにしない。画面は元のメディアを表示する)
-        let failed = failed.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !failed.is_empty() {
-            conn.execute_batch("BEGIN")?;
-            for rel in &failed {
-                conn.prepare_cached("UPDATE messages SET thumb=NULL WHERE thumb=?")?.execute([rel])?;
-            }
-            conn.execute_batch("COMMIT")?;
-        }
         written.map_err(|e| IndexError::Failed(format!("サムネを thumbs.db に保存できませんでした: {e}")))?;
     }
     Ok(())
@@ -588,25 +600,34 @@ fn upsert_one(
         })
         .optional()?;
     let mut thumb_rel: Option<String> = prev.as_ref().and_then(|p| p.thumb.clone());
-    // 前回作れなかったサムネ(壊れた画像など)。thumb を空にして、作り直さない
-    let mut thumb_failed = false;
+    // サムネの有無をこの取り込みで決めたか(決めたら、保存済みの thumb と食い違えば書き直す)
+    let mut thumb_decided = false;
 
     // サムネ元: jpg(画像)。無ければ ffmpeg があるときだけ動画(flag=2 の mp4。音声も mp4 を使うため flag で絞る)
     let jpg = files.iter().find(|f| f.ext == "jpg");
     let video = if jpg.is_none() && has_ffmpeg { files.iter().find(|f| f.ext == "mp4" && f.flag == 2) } else { None };
     if let Some(src) = jpg.or(video).filter(|_| !opts.no_thumbs) {
         let rel = thumb_rel_path(&row.member, row.msg_id);
-        // 既にあるサムネは作り直さない(後から ffmpeg を入れても、未生成の動画サムネだけが積まれる)
-        if thumbs::is_stored(tconn, &rel)? {
+        thumb_decided = true;
+        // 同じ元ファイルから作ったサムネが既にあれば作り直さない(後から ffmpeg を入れても、未生成の動画サムネだけが積まれる)
+        if thumbs::is_stored_for(tconn, &rel, &src.path)? {
             thumb_rel = Some(rel);
         } else if opts.mode != "full" && thumbs::failed_before(tconn, &rel, &src.path)? {
             // 同じ元ファイルから前回作れなかった。差分取り込みでは作り直さない(全期間の取り込みでは作り直しを試す)
             thumb_rel = None;
-            thumb_failed = true;
         } else {
+            // thumb は、サムネを thumbs.db に保存できてから設定する(サムネ生成の段階)。
+            // それまでは空にしておき、画面には元のメディアを出す。先に設定すると、途中で止まったときに
+            // 存在しないサムネを指したまま残る
             let kind = if jpg.is_some() { ThumbKind::Image } else { ThumbKind::Video };
-            thumb_jobs.push(ThumbJob { src: src.path.clone(), rel: rel.clone(), kind });
-            thumb_rel = Some(rel);
+            thumb_jobs.push(ThumbJob {
+                src: src.path.clone(),
+                rel,
+                kind,
+                member: row.member.clone(),
+                msg_id: row.msg_id,
+            });
+            thumb_rel = None;
         }
     }
 
@@ -653,8 +674,7 @@ fn upsert_one(
                 || p.flag != row.flag
                 || p.missing != 0
                 || p.ts_raw != row.ts_raw
-                || (thumb_rel.is_some() && p.thumb != thumb_rel)
-                || (thumb_failed && p.thumb.is_some());
+                || (thumb_decided && p.thumb != thumb_rel);
             if changed {
                 conn.prepare_cached(
                     "UPDATE messages SET group_=?, ts=?, ts_raw=?, body=?, media=?, kind=?, flag=?, thumb=?, missing=0

@@ -102,12 +102,31 @@ fn name_of(p: &Path) -> String {
     p.file_name().map_or_default(|n| n.to_string_lossy().into_owned())
 }
 
-fn list_dir(d: &Path) -> Vec<PathBuf> {
-    match std::fs::read_dir(d) {
-        Ok(it) => it.filter_map(|e| e.ok().map(|e| e.path())).collect(),
+/// ディレクトリの中身。読めなければ警告して None。
+/// 個々の項目が読めない場合も None にする(一部だけ読めた結果を「全部」として扱うと、残りを missing にしてしまう)。
+fn try_list_dir(d: &Path) -> Option<Vec<PathBuf>> {
+    let res = std::fs::read_dir(d).and_then(|it| it.map(|e| e.map(|e| e.path())).collect::<std::io::Result<Vec<_>>>());
+    match res {
+        Ok(v) => Some(v),
         Err(e) => {
             logln!("[warn] failed to list {}: {e}", d.display());
-            Vec::new()
+            None
+        }
+    }
+}
+
+/// ディレクトリの中身(読めなければ空)。メンバー探しなど、読めなくても missing 判定に響かないところで使う。
+fn list_dir(d: &Path) -> Vec<PathBuf> {
+    try_list_dir(d).unwrap_or_default()
+}
+
+/// ディレクトリか・ファイルか。メタデータを読めなければ None。
+fn entry_kind(p: &Path) -> Option<bool> {
+    match std::fs::metadata(p) {
+        Ok(m) => Some(m.is_dir()),
+        Err(e) => {
+            logln!("[warn] failed to read metadata of {}: {e}", p.display());
+            None
         }
     }
 }
@@ -189,6 +208,11 @@ fn make_entry(root: &Path, f: &Path, member: &str, group: &Option<String>) -> Op
 }
 
 /// 1メンバー分を走査する。戻り値: (FileEntry 一覧, 実際に走査した yyyymm(None は全期間))
+///
+/// 読めなかったフォルダ(ネットワークドライブの瞬断、権限、同期ソフトのロックなど)の範囲は、走査した範囲に含めない。
+/// 含めると、その範囲の取り込み済みの行がすべて missing=1 になる。
+/// - メンバーフォルダ自体が読めない: 何も走査しなかった扱い
+/// - 年・月フォルダや項目の一部が読めない: 読めた月だけを走査した扱い(全期間でも「全期間」にしない)
 fn scan_member(
     root: &Path,
     member_dir: &Path,
@@ -198,37 +222,72 @@ fn scan_member(
 ) -> (Vec<FileEntry>, Vec<Option<String>>) {
     let mut entries = Vec::new();
     let mut touched: Vec<Option<String>> = Vec::new();
+    // 走査できなかった範囲があるか
+    let mut incomplete = false;
 
+    let Some(top) = try_list_dir(member_dir) else {
+        return (entries, touched);
+    };
     let mut year_dirs = Vec::new();
     let mut flat_files = Vec::new();
-    for e in list_dir(member_dir) {
-        if e.is_dir() {
-            if is_year_dir(&name_of(&e)) {
-                year_dirs.push(e);
+    for e in top {
+        match entry_kind(&e) {
+            Some(true) => {
+                if is_year_dir(&name_of(&e)) {
+                    year_dirs.push(e);
+                }
             }
-        } else {
-            flat_files.push(e);
+            Some(false) => flat_files.push(e),
+            None => incomplete = true,
         }
     }
 
     sort_paths(&mut year_dirs);
     for year_dir in year_dirs {
-        let mut months: Vec<PathBuf> =
-            list_dir(&year_dir).into_iter().filter(|d| d.is_dir() && is_yearmonth_dir(&name_of(d))).collect();
+        let Some(items) = try_list_dir(&year_dir) else {
+            incomplete = true;
+            continue;
+        };
+        let mut months = Vec::new();
+        for d in items {
+            if !is_yearmonth_dir(&name_of(&d)) {
+                continue;
+            }
+            match entry_kind(&d) {
+                Some(true) => months.push(d),
+                Some(false) => {}
+                None => incomplete = true,
+            }
+        }
         sort_paths(&mut months);
         for month_dir in months {
             let ym = name_of(&month_dir);
             if member_recent.is_some_and(|r| !r.contains(&ym)) {
                 continue;
             }
-            touched.push(Some(ym));
-            for f in list_dir(&month_dir) {
-                if !f.is_file() {
-                    continue;
+            let Some(files) = try_list_dir(&month_dir) else {
+                incomplete = true;
+                continue;
+            };
+            let mut month_entries = Vec::new();
+            let mut month_ok = true;
+            for f in files {
+                match entry_kind(&f) {
+                    Some(false) => {
+                        if let Some(fe) = make_entry(root, &f, member, group) {
+                            month_entries.push(fe);
+                        }
+                    }
+                    Some(true) => {}
+                    None => month_ok = false,
                 }
-                if let Some(fe) = make_entry(root, &f, member, group) {
-                    entries.push(fe);
-                }
+            }
+            // 読めた分は取り込む(missing=0 に戻すだけで害はない)。月の一部が読めなければ、その月は判定しない
+            entries.extend(month_entries);
+            if month_ok {
+                touched.push(Some(ym));
+            } else {
+                incomplete = true;
             }
         }
     }
@@ -245,7 +304,7 @@ fn scan_member(
         entries.push(fe);
     }
 
-    if member_recent.is_none() {
+    if member_recent.is_none() && !incomplete {
         touched.push(None); // 全期間(新規メンバー含む)
     }
     (entries, touched)
@@ -320,6 +379,26 @@ mod tests {
         assert!(parse_filename("12_1_20260801000000x.jpg").is_none()); // 区切りが '_' でない
         assert!(parse_filename("12_1_2026080100000_金村.jpg").is_none()); // 13桁
         assert!(parse_filename("12_1_20260801000000_金村").is_none()); // 拡張子なし
+    }
+
+    /// 読めなかったフォルダの範囲は走査範囲に入れない(入れると、その範囲の取り込み済みの行がすべて missing になる)。
+    #[test]
+    fn unreadable_dirs_are_not_in_scope() {
+        let dir = std::env::temp_dir().join(format!("mv_scan_unreadable_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let member = dir.join("m");
+        std::fs::create_dir_all(member.join("2026").join("202608")).unwrap();
+        std::fs::write(member.join("2026").join("202608").join("1_0_20260801000000.txt"), "a").unwrap();
+
+        // 読めたメンバーは全期間
+        let (es, touched) = scan_member(&dir, &member, "m", &None, None);
+        assert_eq!(es.len(), 1);
+        assert!(touched.contains(&None));
+
+        // メンバーフォルダが読めない(ここでは消えた)なら、何も走査しなかった扱い
+        let (es, touched) = scan_member(&dir, &dir.join("gone"), "gone", &None, None);
+        assert!(es.is_empty() && touched.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

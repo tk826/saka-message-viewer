@@ -2,7 +2,7 @@
 /* ==========================================================================
    タイムライン (仮想スクロール)
    ========================================================================== */
-import { qs, ce, escapeHtml, fetchJson, dateKey, formatDateSep, isDevMode, highlightTerms as applyHighlight } from "./utils.js";
+import { qs, ce, escapeHtml, fetchJson, isAbortError, dateKey, formatDateSep, isDevMode, highlightTerms as applyHighlight } from "./utils.js";
 import { applyNicknamePlaceholder } from "./display-prefs.js";
 
 export const Timeline = {
@@ -17,6 +17,17 @@ export const Timeline = {
   highlightTerms: [],  // 検索結果から飛んできたときに本文中で強調する語
 
   el: null,
+  // 表示の世代。reset のたびに進める。応答が届いた時点で世代が変わっていれば(別のメンバーに切り替えた・
+  // ジャンプし直したなど)、その応答は捨てる。捨てないと、後から届いた古い応答が今の表示を上書きしたり、
+  // 別のメンバーの行が混ざったりする
+  _gen: 0,
+  // 今の世代の要求を中断するためのもの(reset で中断する)
+  _abort: null,
+
+  // 今の世代の要求に付ける signal。
+  _signal() {
+    return this._abort ? this._abort.signal : undefined;
+  },
 
   init() {
     this.el = qs("#timeline");
@@ -120,6 +131,9 @@ export const Timeline = {
   },
 
   reset(member) {
+    this._gen++;
+    if (this._abort) this._abort.abort();
+    this._abort = new AbortController();
     this.member = member;
     this.loadingOlder = false;
     this.loadingNewer = false;
@@ -148,15 +162,18 @@ export const Timeline = {
     // 遅延importで循環参照(message-render.js -> timeline.js)を避けつつ利用する
     const { buildDateSep, buildMessageRow } = await import("./message-render.js");
     this.reset(member);
+    const gen = this._gen;
+    const signal = this._signal();
     this.el.innerHTML = `<div class="load-sentinel">読み込み中...</div>`;
     try {
       let data;
       if (jumpTs != null) {
         // ジャンプ先の少し前から読み込む
-        data = await fetchJson(`/api/messages?member=${encodeURIComponent(member)}&before=${jumpTs + 1}&limit=${this.PAGE_SIZE}`);
+        data = await fetchJson(`/api/messages?member=${encodeURIComponent(member)}&before=${jumpTs + 1}&limit=${this.PAGE_SIZE}`, { signal });
       } else {
-        data = await fetchJson(`/api/messages?member=${encodeURIComponent(member)}&limit=${this.PAGE_SIZE}`);
+        data = await fetchJson(`/api/messages?member=${encodeURIComponent(member)}&limit=${this.PAGE_SIZE}`, { signal });
       }
+      if (gen !== this._gen) return; // 待っている間に別の表示に切り替わった
       this.el.innerHTML = "";
       const msgs = data.messages || [];
       if (msgs.length === 0) {
@@ -172,7 +189,8 @@ export const Timeline = {
 
       if (jumpTs != null) {
         // ジャンプ指定がある場合、以降のメッセージも少し読み込んでおく
-        const newer = await fetchJson(`/api/messages?member=${encodeURIComponent(member)}&after=${msgs[msgs.length - 1].ts}&after_id=${msgs[msgs.length - 1].msg_id}&limit=${this.PAGE_SIZE}`);
+        const newer = await fetchJson(`/api/messages?member=${encodeURIComponent(member)}&after=${msgs[msgs.length - 1].ts}&after_id=${msgs[msgs.length - 1].msg_id}&limit=${this.PAGE_SIZE}`, { signal });
+        if (gen !== this._gen) return;
         if (newer.messages && newer.messages.length > 0) {
           this.appendBatch(newer.messages, "bottom", buildDateSep, buildMessageRow);
           if (newer.messages.length < this.PAGE_SIZE) this.hasMoreNewer = false;
@@ -205,6 +223,7 @@ export const Timeline = {
       }
       requestAnimationFrame(() => this.updateStickyDateSep());
     } catch (e) {
+      if (gen !== this._gen || isAbortError(e)) return; // 古い要求(切り替えで中断したものを含む)
       console.error(e);
       this.el.innerHTML = `<div class="load-sentinel">読み込みに失敗しました: ${escapeHtml(e.message)}</div>`;
     }
@@ -299,18 +318,24 @@ export const Timeline = {
   },
 
   async loadOlder() {
-    const { buildDateSep, buildMessageRow } = await import("./message-render.js");
-    const firstRow = this.el.querySelector(".msg-row");
-    if (!firstRow) return;
-    const oldestTs = Number(firstRow.dataset.ts);
-    // (ts, msg_id) を目印にして、同じ秒のメッセージがページ境界で抜け落ちないようにする
-    const oldestId = Number(firstRow.dataset.msgId);
+    // 呼び出し時点の世代。import を待つ間に切り替わることもあるので、await より前に取る
+    const gen = this._gen;
+    const signal = this._signal();
+    if (this.loadingOlder) return;
     this.loadingOlder = true;
     const sentinel = ce("div", "load-sentinel");
-    sentinel.textContent = "過去のメッセージを読み込み中...";
-    this.el.insertBefore(sentinel, this.el.firstChild);
     try {
-      const data = await fetchJson(`/api/messages?member=${encodeURIComponent(this.member)}&before=${oldestTs}&before_id=${oldestId}&limit=${this.PAGE_SIZE}`);
+      const { buildDateSep, buildMessageRow } = await import("./message-render.js");
+      if (gen !== this._gen) return;
+      const firstRow = this.el.querySelector(".msg-row");
+      if (!firstRow) return;
+      const oldestTs = Number(firstRow.dataset.ts);
+      // (ts, msg_id) を目印にして、同じ秒のメッセージがページ境界で抜け落ちないようにする
+      const oldestId = Number(firstRow.dataset.msgId);
+      sentinel.textContent = "過去のメッセージを読み込み中...";
+      this.el.insertBefore(sentinel, this.el.firstChild);
+      const data = await fetchJson(`/api/messages?member=${encodeURIComponent(this.member)}&before=${oldestTs}&before_id=${oldestId}&limit=${this.PAGE_SIZE}`, { signal });
+      if (gen !== this._gen) return; // 別の表示に切り替わった(古い行を混ぜない)
       const msgs = data.messages || [];
       sentinel.remove();
       if (msgs.length === 0) {
@@ -323,6 +348,13 @@ export const Timeline = {
       const prevScrollHeight = this.el.scrollHeight;
       const prevScrollTop = this.el.scrollTop;
 
+      // 新しいバッチの最後の日と、今の先頭の日付区切りが同じ日なら、今の先頭の区切りを外す
+      // (外さないと、ページの境目が日の途中に来るたびに同じ日付の区切りがその日の途中にもう一度出る)
+      const firstEl = this.el.firstElementChild;
+      if (firstEl && firstEl.classList.contains("date-sep")
+          && firstEl.textContent === formatDateSep(msgs[msgs.length - 1].ts)) {
+        firstEl.remove();
+      }
       // 日付セパレータ再計算のため、先頭要素の日付を一旦リセットして挿入
       this._globalLastDateKey = null;
       this.appendBatch(msgs, "top", buildDateSep, buildMessageRow);
@@ -332,26 +364,33 @@ export const Timeline = {
       const newScrollHeight = this.el.scrollHeight;
       this.el.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
 
-      this.trimIfNeeded("bottom");
+      this.trimIfNeeded("bottom", buildDateSep);
     } catch (e) {
+      if (gen !== this._gen || isAbortError(e)) return;
       console.error(e);
       sentinel.textContent = "読み込みに失敗しました";
       setTimeout(() => sentinel.remove(), 2000);
     } finally {
-      this.loadingOlder = false;
+      // 切り替え後の世代の読み込み状態は触らない(reset で下ろし済み。新しい世代の読み込み中かもしれない)
+      if (gen === this._gen) this.loadingOlder = false;
     }
   },
 
   async loadNewer() {
-    const { buildDateSep, buildMessageRow } = await import("./message-render.js");
-    const rows = this.el.querySelectorAll(".msg-row");
-    if (rows.length === 0) return;
-    const lastRow = rows[rows.length - 1];
-    const newestTs = Number(lastRow.dataset.ts);
-    const newestId = Number(lastRow.dataset.msgId);
+    const gen = this._gen;
+    const signal = this._signal();
+    if (this.loadingNewer) return;
     this.loadingNewer = true;
     try {
-      const data = await fetchJson(`/api/messages?member=${encodeURIComponent(this.member)}&after=${newestTs}&after_id=${newestId}&limit=${this.PAGE_SIZE}`);
+      const { buildDateSep, buildMessageRow } = await import("./message-render.js");
+      if (gen !== this._gen) return;
+      const rows = this.el.querySelectorAll(".msg-row");
+      if (rows.length === 0) return;
+      const lastRow = rows[rows.length - 1];
+      const newestTs = Number(lastRow.dataset.ts);
+      const newestId = Number(lastRow.dataset.msgId);
+      const data = await fetchJson(`/api/messages?member=${encodeURIComponent(this.member)}&after=${newestTs}&after_id=${newestId}&limit=${this.PAGE_SIZE}`, { signal });
+      if (gen !== this._gen) return; // 別の表示に切り替わった(古い行を混ぜない)
       const msgs = data.messages || [];
       if (msgs.length === 0) {
         this.hasMoreNewer = false;
@@ -363,11 +402,12 @@ export const Timeline = {
       const lastKey = dateKey(Number(lastRow.dataset.ts));
       this._globalLastDateKey = lastKey;
       this.appendBatch(msgs, "bottom", buildDateSep, buildMessageRow);
-      this.trimIfNeeded("top");
+      this.trimIfNeeded("top", buildDateSep);
     } catch (e) {
+      if (gen !== this._gen || isAbortError(e)) return;
       console.error(e);
     } finally {
-      this.loadingNewer = false;
+      if (gen === this._gen) this.loadingNewer = false;
     }
   },
 
@@ -395,22 +435,16 @@ export const Timeline = {
       }
       prevWasSep = isSep;
     }
-    // 同一日付が連続するセパレータも統合(念のため二重チェック)
+    // 同じ日付の区切りが2つ続いたら(間に行があっても)後ろを外す。
+    // 行は時刻順に並んでいるので、同じ日付の区切りが2回出るのは常に重複
     const seps = Array.from(this.el.querySelectorAll(".date-sep"));
     for (let i = 1; i < seps.length; i++) {
-      if (seps[i].textContent === seps[i - 1].textContent) {
-        let node = seps[i - 1].nextSibling;
-        let hasMsgBetween = false;
-        while (node && node !== seps[i]) {
-          if (node.classList && node.classList.contains("msg-row")) hasMsgBetween = true;
-          node = node.nextSibling;
-        }
-        if (!hasMsgBetween) seps[i].remove();
-      }
+      if (seps[i].textContent === seps[i - 1].textContent) seps[i].remove();
     }
   },
 
-  trimIfNeeded(side) {
+  // buildDateSep: 間引いた後、先頭の行に日付区切りを付け直すために使う
+  trimIfNeeded(side, buildDateSep) {
     const rows = this.el.querySelectorAll(".msg-row");
     if (rows.length <= this.MAX_DOM_ROWS) return;
     const excess = rows.length - this.TRIM_TO;
@@ -430,7 +464,13 @@ export const Timeline = {
         node = node.previousElementSibling;
       }
       for (const n of toRemove) n.remove();
+      // ある日の先頭の行で止まると、その日の区切りだけが末尾に残る。残すと、次に新しい方を読んだときに
+      // 同じ日の区切りが二重に出るので外す
+      while (el.lastElementChild && el.lastElementChild.classList.contains("date-sep")) {
+        el.lastElementChild.remove();
+      }
       this.hasMoreNewer = true;
+      this._updateBottomResizeObserver();
     } else {
       // 上端(古い方)を間引く。ユーザーが上端付近を見ている場合は間引かない。
       const el = this.el;
@@ -447,6 +487,11 @@ export const Timeline = {
         node = node.nextElementSibling;
       }
       for (const n of toRemove) n.remove();
+      // 日の途中で止まると、先頭が日付区切りの無い行になり、その範囲では日付の見出しが出なくなる。区切りを付け直す
+      const first = el.firstElementChild;
+      if (first && first.classList.contains("msg-row") && first.dataset.ts && buildDateSep) {
+        el.insertBefore(buildDateSep(Number(first.dataset.ts)), first);
+      }
       this.hasMoreOlder = true;
 
       const newScrollHeight = el.scrollHeight;

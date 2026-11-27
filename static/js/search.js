@@ -2,7 +2,7 @@
 /* ==========================================================================
    検索
    ========================================================================== */
-import { qs, ce, escapeHtml, fetchJson, toast, formatLastTs, formatTime, sanitizeSnippet } from "./utils.js";
+import { qs, ce, escapeHtml, fetchJson, toast, formatLastTs, formatTime, sanitizeSnippet, isImeComposing, makeKeyboardClickable } from "./utils.js";
 import { applyNicknamePlaceholderHtml } from "./display-prefs.js";
 import { Sidebar } from "./sidebar.js";
 
@@ -18,11 +18,15 @@ export const Search = {
   _loadingMore: false,
   _shown: 0,
   _total: 0,
+  // 検索の通し番号。run のたびに進め、応答が届いた時点で変わっていればその応答は捨てる
+  // (続けて検索したとき、後から届いた古い検索の結果で新しい結果を上書き・追記しない)
+  _seq: 0,
 
   init() {
     qs("#searchBtn").addEventListener("click", () => this.run());
     qs("#searchInput").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") this.run();
+      // 日本語入力の変換を確定する Enter では検索しない
+      if (e.key === "Enter" && !isImeComposing(e)) this.run();
     });
     qs(".search-close").addEventListener("click", () => this.close());
   },
@@ -46,6 +50,8 @@ export const Search = {
     if (to) params.set("to", to);
     params.set("limit", String(this.PAGE_SIZE));
 
+    const seq = ++this._seq;
+    this._loadingMore = false; // 前の検索の追加読み込みは、届いても捨てる
     this.lastQuery = q;
     this._params = params;
     this._nextBefore = null;
@@ -63,6 +69,7 @@ export const Search = {
 
     try {
       const data = await fetchJson(`/api/search?${params.toString()}`);
+      if (seq !== this._seq) return; // 後から別の検索をした
       body.innerHTML = "";
       this.lastTerms = (data.terms && data.terms.include) || [];
       this._total = data.total ?? data.results.length;
@@ -74,6 +81,7 @@ export const Search = {
       }
       this.appendResults(data);
     } catch (e) {
+      if (seq !== this._seq) return;
       console.error(e);
       body.innerHTML = `<div class="hint">検索に失敗しました: ${escapeHtml(e.message)}</div>`;
     }
@@ -111,6 +119,7 @@ export const Search = {
 
   async loadMore() {
     if (this._loadingMore || this._nextBefore == null || !this._params) return;
+    const seq = this._seq;
     this._loadingMore = true;
     const btn = qs("#searchMoreBtn");
     if (btn) { btn.disabled = true; btn.textContent = "読み込み中..."; }
@@ -120,13 +129,15 @@ export const Search = {
       if (this._nextBeforeRowid != null) params.set("before_rowid", String(this._nextBeforeRowid));
       // total は初回のみ返る(続きのページでは null)。初回の値をそのまま使う
       const data = await fetchJson(`/api/search?${params.toString()}`);
+      if (seq !== this._seq) return; // 待っている間に検索し直した(前の検索の続きを混ぜない)
       this.appendResults(data);
     } catch (e) {
+      if (seq !== this._seq) return;
       console.error(e);
       toast("追加の読み込みに失敗しました: " + e.message, true);
       if (btn) { btn.disabled = false; btn.textContent = "さらに読み込む"; }
     } finally {
-      this._loadingMore = false;
+      if (seq === this._seq) this._loadingMore = false;
     }
   },
 
@@ -146,6 +157,7 @@ export const Search = {
       // ジャンプ先のタイムラインでも検索語を強調したまま見せる
       App.jumpToMessage(r.member, r.ts, r.msg_id, this.lastTerms);
     });
+    makeKeyboardClickable(item, `${r.member} ${formatLastTs(r.ts)} ${formatTime(r.ts)} のメッセージへ移動`);
     return item;
   },
 

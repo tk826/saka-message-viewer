@@ -12,13 +12,18 @@
 use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
 
-/// 既に他の取り込みが実行中。
+/// ロックを取得できなかった。ふつうは既に他の取り込みが実行中。
+/// `io_error` が true なら、競合ではなくロックファイルを開けない・ロック操作自体が失敗した
+/// (権限不足、data フォルダが無いなど。「実行中」として扱うと原因に気付けない)。
 #[derive(Debug)]
-pub struct IndexAlreadyRunning(pub String);
+pub struct IndexAlreadyRunning {
+    pub message: String,
+    pub io_error: bool,
+}
 
 impl std::fmt::Display for IndexAlreadyRunning {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.message)
     }
 }
 
@@ -40,18 +45,25 @@ fn open_lock_file(lock_path: &Path) -> std::io::Result<File> {
 
 impl IndexLock {
     pub fn acquire(path: &Path) -> Result<IndexLock, IndexAlreadyRunning> {
-        let err = |pid: Option<i64>| {
+        let busy = |pid: Option<i64>| {
             let pid = pid.map(|p| p.to_string()).unwrap_or_else(|| "None".into());
-            IndexAlreadyRunning(format!("index already running (pid={pid}, lock={})", path.display()))
+            IndexAlreadyRunning {
+                message: format!("index already running (pid={pid}, lock={})", path.display()),
+                io_error: false,
+            }
+        };
+        let io = |e: std::io::Error| IndexAlreadyRunning {
+            message: format!("failed to lock {}: {e}", path.display()),
+            io_error: true,
         };
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let file = open_lock_file(path).map_err(|_| err(None))?;
+        let file = open_lock_file(path).map_err(io)?;
         match file.try_lock() {
             Ok(()) => {}
-            Err(TryLockError::WouldBlock) => return Err(err(read_lock_pid(path))),
-            Err(TryLockError::Error(_)) => return Err(err(None)),
+            Err(TryLockError::WouldBlock) => return Err(busy(read_lock_pid(path))),
+            Err(TryLockError::Error(e)) => return Err(io(e)),
         }
         // ロックを握った後に書くので、前の保持者が異常終了して残した PID ファイルもここで上書きされる
         let pid_path = pid_path(path);
@@ -161,7 +173,8 @@ mod tests {
             assert_eq!(read_lock_pid(&p), Some(std::process::id() as i64));
             // 自分自身が生きているので2回目は取れない
             let e = IndexLock::acquire(&p).err().unwrap();
-            assert!(e.0.starts_with(&format!("index already running (pid={}", std::process::id())), "{}", e.0);
+            assert!(e.message.starts_with(&format!("index already running (pid={}", std::process::id())), "{e}");
+            assert!(!e.io_error);
         }
         assert!(!pid_path(&p).exists(), "drop で PID ファイルを消す");
         assert!(p.exists(), "ロックファイル自体は消さない");

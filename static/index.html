@@ -783,6 +783,17 @@ body {
   font-size: 1.125rem;
   cursor: pointer;
   box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+  /* <button> の既定の枠・余白を消す */
+  border: none;
+  padding: 0;
+  font-family: inherit;
+}
+
+/* キーボードで操作できるようにした div など(role="button")のフォーカス表示 */
+[role="button"]:focus-visible,
+#scrollBottomBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* ---------------- Panels (calendar / search) ---------------- */
@@ -1521,7 +1532,7 @@ body {
         </div>
         <div id="stickyDateSep" class="hidden"></div>
         <div id="timeline" class="hidden"></div>
-        <div id="scrollBottomBtn" class="hidden" title="最新へ">&#8595;</div>
+        <button type="button" id="scrollBottomBtn" class="hidden" title="最新へ" aria-label="最新のメッセージへ">&#8595;</button>
       </div>
     </main>
   </div>

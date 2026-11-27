@@ -29,8 +29,13 @@ fn exclusive(st: &AppState) -> ApiResult<(OwnedMutexGuard<()>, IndexLock)> {
         return Err(ApiError::already_running(None));
     }
     let lock_path = st.cfg.read().unwrap().index_lock_path();
-    let lock = IndexLock::acquire(&lock_path).map_err(|_| {
-        ApiError::already_running(read_lock_pid(&lock_path).map(|pid| format!("index process pid={pid} is running")))
+    let lock = IndexLock::acquire(&lock_path).map_err(|e| {
+        if e.io_error {
+            // 競合ではない(権限不足など)。「実行中」と返すと原因に気付けない
+            ApiError::internal(e)
+        } else {
+            ApiError::already_running(read_lock_pid(&lock_path).map(|pid| format!("index process pid={pid} is running")))
+        }
     })?;
     Ok((guard, lock))
 }
@@ -117,10 +122,14 @@ const RESET_TRASH_SUFFIX: &str = ".resetting";
 
 /// 初期化で消すもの(無いものは飛ばす)。.index.lock はこの処理自身が握っているので含めない(PID ファイルは解放時に消える)。
 /// 旧版のサムネのフォルダは、開かれているファイルがあると名前を変えられないことが多いので最後に置く(戻す数が増えないように)。
+/// 旧版のサムネのフォルダは、data フォルダの下にあるときだけ消す(設定で別のフォルダを指していると、
+/// 中身を確かめずに丸ごと消すと無関係なファイルを消しうる。data フォルダの外なら利用者が消す)。
 fn reset_targets(cfg: &Config) -> Vec<PathBuf> {
     let udb = cfg.user_db_path();
     let tdb = cfg.thumbs_db_path();
-    vec![
+    let legacy = &cfg.legacy_thumbs_dir;
+    let legacy_in_data = legacy != &cfg.data_dir && legacy.starts_with(&cfg.data_dir);
+    let mut v = vec![
         cfg.db_path.clone(),
         with_suffix(&cfg.db_path, "-wal"),
         with_suffix(&cfg.db_path, "-shm"),
@@ -131,8 +140,11 @@ fn reset_targets(cfg: &Config) -> Vec<PathBuf> {
         with_suffix(&tdb, "-wal"),
         with_suffix(&tdb, "-shm"),
         cfg.progress_json_path(),
-        cfg.legacy_thumbs_dir.clone(),
-    ]
+    ];
+    if legacy_in_data {
+        v.push(legacy.clone());
+    }
+    v
 }
 
 fn trash_path(p: &Path) -> PathBuf {
@@ -258,7 +270,12 @@ pub async fn reset(State(st): State<AppState>) -> ApiResult<Json<Value>> {
     .await?
     .map_err(ApiError::internal)?;
 
-    st.cfg.write().unwrap().root = None;
+    let root_from_env = {
+        let mut c = st.cfg.write().unwrap();
+        c.root = None;
+        c.root_from_env
+    };
     st.reindex.clear_status();
-    Ok(Json(json!({ "status": "reset" })))
+    // 環境変数 MSGVIEWER_ROOT で root を上書きしていると、次の起動でその値に戻る(画面で知らせる)
+    Ok(Json(json!({ "status": "reset", "root_env_override": root_from_env })))
 }

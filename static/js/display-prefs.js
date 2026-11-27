@@ -97,12 +97,13 @@ export const DisplayPrefs = {
 export function applyNicknamePlaceholder(s) {
   if (s == null) return s;
   const nickname = DisplayPrefs.load().nickname;
-  return s.replaceAll("%%%", nickname).replaceAll("％％％", nickname);
+  // 置換文字列を関数で渡す(文字列で渡すと、ニックネーム中の "$&" や "$$" が置換パターンとして解釈される)
+  return s.replaceAll("%%%", () => nickname).replaceAll("％％％", () => nickname);
 }
 
 // HTMLエスケープ済みの文字列(検索スニペット等)用。ニックネーム側もエスケープして差し込む。
 export function applyNicknamePlaceholderHtml(s) {
   if (s == null) return s;
   const nickname = escapeHtml(DisplayPrefs.load().nickname);
-  return s.replaceAll("%%%", nickname).replaceAll("％％％", nickname);
+  return s.replaceAll("%%%", () => nickname).replaceAll("％％％", () => nickname);
 }

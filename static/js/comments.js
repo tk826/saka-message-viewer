@@ -2,7 +2,11 @@
 /* ==========================================================================
    メッセージへのコメント (お気に入り登録の有無を問わない)
    ========================================================================== */
-import { ce, fetchJson, toast } from "./utils.js";
+import { ce, fetchJson, toast, makeKeyboardClickable } from "./utils.js";
+
+// コメントを保存したときに document へ送るイベント。同じメッセージの別のエディタ
+// (タイムラインとお気に入りパネル)の表示を合わせるために使う。
+const UPDATED_EVENT = "msgviewer:comment-updated";
 
 export const Comments = {
   // comment: 空文字/nullでコメントを消去。成功時は正規化後のcomment(nullまたは文字列)を返す。
@@ -24,6 +28,21 @@ export function buildCommentEditor(msg, extraClass) {
   const wrap = ce("div", extraClass ? `comment-editor ${extraClass}` : "comment-editor");
   wrap.addEventListener("click", (e) => e.stopPropagation());
 
+  // 別のエディタで同じメッセージのコメントが保存されたら、こちらの表示も合わせる
+  // (合わせないと、こちらで編集を開いたときに古いコメントが初期値になり、保存すると上書きしてしまう)。
+  // 画面から外れたエディタは、次の通知で自分の登録を外す
+  const onUpdated = (e) => {
+    if (!wrap.isConnected) {
+      document.removeEventListener(UPDATED_EVENT, onUpdated);
+      return;
+    }
+    const d = e.detail;
+    if (d.source === wrap || d.member !== msg.member || Number(d.msgId) !== Number(msg.msg_id)) return;
+    msg.comment = d.comment;
+    if (!wrap.querySelector("textarea")) renderView(); // 編集中なら入力を消さない
+  };
+  document.addEventListener(UPDATED_EVENT, onUpdated);
+
   const renderView = () => {
     wrap.innerHTML = "";
     if (msg.comment) {
@@ -31,6 +50,7 @@ export function buildCommentEditor(msg, extraClass) {
       text.textContent = msg.comment;
       text.title = "クリックして編集";
       text.addEventListener("click", renderEdit);
+      makeKeyboardClickable(text, "コメントを編集");
       wrap.appendChild(text);
     } else {
       const addBtn = ce("button", "comment-add-btn");
@@ -68,6 +88,9 @@ export function buildCommentEditor(msg, extraClass) {
         const saved = await Comments.update(msg.member, msg.msg_id, textarea.value);
         msg.comment = saved;
         renderView();
+        document.dispatchEvent(new CustomEvent(UPDATED_EVENT, {
+          detail: { source: wrap, member: msg.member, msgId: msg.msg_id, comment: saved },
+        }));
       } catch (e) {
         console.error(e);
         toast("コメントの保存に失敗しました: " + e.message, true);

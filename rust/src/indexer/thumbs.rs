@@ -24,6 +24,9 @@ pub struct ThumbJob {
     /// thumbs.db のキー(= `messages.thumb`)
     pub rel: String,
     pub kind: ThumbKind,
+    /// サムネを保存できたら `messages.thumb` を設定する行
+    pub member: String,
+    pub msg_id: i64,
 }
 
 /// 長辺を `size` に収める縮小後の寸法。収まっていれば None(縮小しない)。
@@ -71,13 +74,25 @@ fn gen_image_thumb(src: &Path, size: u32, quality: u8) -> Result<Vec<u8>, String
 
 /// ffmpeg で1フレーム抜き出し、JPEG を標準出力から受け取る(一時ファイルを作らない)。
 /// 1秒未満の動画では `-ss 1` が拾えないことがあるので `-ss 0` で再試行する。
-fn gen_video_thumb(src: &Path, size: u32, ffmpeg: Option<&Path>) -> Result<Vec<u8>, String> {
+/// JPEG の品質(1〜100)を ffmpeg の mjpeg の `-q:v`(2〜31、小さいほど高品質)に換算する。
+fn ffmpeg_qscale(quality: u8) -> u32 {
+    (2 + (100 - u32::from(quality.min(100))) / 5).clamp(2, 31)
+}
+
+/// 画像と同じく、長辺を `size` に収め(縦横比は保つ)、拡大はしない。
+fn ffmpeg_scale_filter(size: u32) -> String {
+    format!("scale=w='min(iw,{size})':h='min(ih,{size})':force_original_aspect_ratio=decrease")
+}
+
+fn gen_video_thumb(src: &Path, size: u32, quality: u8, ffmpeg: Option<&Path>) -> Result<Vec<u8>, String> {
     let ffmpeg = ffmpeg.ok_or("ffmpeg not found (PATH にも bin/ にも見つかりません)")?;
+    let filter = ffmpeg_scale_filter(size);
+    let qscale = ffmpeg_qscale(quality).to_string();
     let run = |ss: &str| {
         let mut cmd = Command::new(ffmpeg);
         cmd.args(["-ss", ss, "-i"])
             .arg(src)
-            .args(["-frames:v", "1", "-vf", &format!("scale={size}:-1"), "-q:v", "3"])
+            .args(["-frames:v", "1", "-vf", &filter, "-q:v", &qscale])
             .args(["-f", "image2pipe", "-c:v", "mjpeg", "-"])
             .stdin(std::process::Stdio::null());
         #[cfg(windows)]
@@ -148,7 +163,7 @@ pub fn source_signature(src: &Path) -> Option<String> {
 pub fn generate(job: &ThumbJob, size: u32, quality: u8, ffmpeg: Option<&Path>) -> Result<Vec<u8>, String> {
     let data = match job.kind {
         ThumbKind::Image => gen_image_thumb(&job.src, size, quality),
-        ThumbKind::Video => gen_video_thumb(&job.src, size, ffmpeg),
+        ThumbKind::Video => gen_video_thumb(&job.src, size, quality, ffmpeg),
     }?;
     if data.is_empty() {
         return Err("empty thumbnail".into());
@@ -158,13 +173,29 @@ pub fn generate(job: &ThumbJob, size: u32, quality: u8, ffmpeg: Option<&Path>) -
 
 // ---------------------------------------------------------------- thumbs.db
 
-/// 使えるサムネが thumbs.db に既にあるか。
+/// 使えるサムネが thumbs.db に既にあるか(元ファイルとの照合はしない)。
+#[cfg(test)]
 pub fn is_stored(conn: &Connection, rel: &str) -> rusqlite::Result<bool> {
     Ok(conn
         .prepare_cached("SELECT 1 FROM thumbs WHERE path=? AND length(data) > 0")?
         .query_row([rel], |_| Ok(()))
         .optional()?
         .is_some())
+}
+
+/// 元ファイル `src` から作った、使えるサムネが thumbs.db にあるか。
+/// 作ったときの元ファイルの印(大きさ・更新日時)と食い違えば、元ファイルが差し替えられたので false(作り直す)。
+/// 印の無いサムネ(旧版から取り込んだもの)は、確かめようがないので使えるものとする。
+pub fn is_stored_for(conn: &Connection, rel: &str, src: &Path) -> rusqlite::Result<bool> {
+    let stored: Option<Option<String>> = conn
+        .prepare_cached("SELECT sig FROM thumbs WHERE path=? AND length(data) > 0")?
+        .query_row([rel], |r| r.get(0))
+        .optional()?;
+    Ok(match stored {
+        None => false,
+        Some(None) => true,
+        Some(Some(sig)) => source_signature(src).is_none_or(|s| s == sig),
+    })
 }
 
 /// 同じ元ファイル(大きさ・更新日時が同じ)から前回作れなかったか。
@@ -180,7 +211,8 @@ pub fn failed_before(conn: &Connection, rel: &str, src: &Path) -> rusqlite::Resu
 
 /// 生成の結果。書き込みスレッドへ送る。
 pub enum Outcome {
-    Made { rel: String, data: Vec<u8> },
+    /// 作れた。`member`/`msg_id` は `messages.thumb` を設定する行、`sig` は元ファイルの印
+    Made { rel: String, data: Vec<u8>, sig: Option<String>, member: String, msg_id: i64 },
     /// 作れなかった。`sig` は元ファイルの印(読めなければ None で、印を残さない)
     Failed { rel: String, sig: Option<String> },
 }
@@ -191,12 +223,12 @@ fn to_ns(t: std::time::SystemTime) -> i64 {
 
 fn store(conn: &Connection, o: &Outcome) -> rusqlite::Result<()> {
     match o {
-        Outcome::Made { rel, data } => {
+        Outcome::Made { rel, data, sig, .. } => {
             conn.prepare_cached(
-                "INSERT INTO thumbs (path, data, updated_at) VALUES (?, ?, ?)
-                 ON CONFLICT(path) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at",
+                "INSERT INTO thumbs (path, data, updated_at, sig) VALUES (?, ?, ?, ?)
+                 ON CONFLICT(path) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at, sig=excluded.sig",
             )?
-            .execute(params![rel, data, to_ns(std::time::SystemTime::now())])?;
+            .execute(params![rel, data, to_ns(std::time::SystemTime::now()), sig])?;
             conn.prepare_cached("DELETE FROM thumb_failures WHERE path=?")?.execute([rel])?;
         }
         Outcome::Failed { rel, sig: Some(sig) } => {
@@ -212,8 +244,9 @@ fn store(conn: &Connection, o: &Outcome) -> rusqlite::Result<()> {
 const WRITE_BATCH: usize = 200;
 
 /// `f` を1つのトランザクションで実行する(失敗したら巻き戻す)。
-fn in_transaction(conn: &Connection, f: impl FnOnce() -> rusqlite::Result<()>) -> rusqlite::Result<()> {
-    conn.execute_batch("BEGIN")?;
+/// IMMEDIATE で始める(DEFERRED だと、読んでから書くときに他の書き手と競合して、待たずに SQLITE_BUSY で失敗しうる)。
+pub(crate) fn in_transaction(conn: &Connection, f: impl FnOnce() -> rusqlite::Result<()>) -> rusqlite::Result<()> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
     match f() {
         Ok(()) => conn.execute_batch("COMMIT"),
         Err(e) => {
@@ -226,18 +259,37 @@ fn in_transaction(conn: &Connection, f: impl FnOnce() -> rusqlite::Result<()>) -
 /// 書き込みスレッドの本体。送り手がすべて閉じるまで、届いた結果を thumbs.db に書く。
 /// 届いている分をまとめて1つのトランザクションにする(1件ずつ commit すると遅い)。届くのを待たずに commit するので、
 /// 取り込み中でもできたサムネから画面に出る。
-pub fn write_outcomes(conn: &Connection, rx: &Receiver<Outcome>) -> rusqlite::Result<()> {
+///
+/// commit するたびに、保存できたサムネの (member, msg_id, rel) を `after_commit` に渡す。
+/// 呼び出し側はここで `messages.thumb` を設定する(保存より先に設定すると、途中で止まったときに
+/// 存在しないサムネを指したまま残る)。
+pub fn write_outcomes(
+    conn: &Connection,
+    rx: &Receiver<Outcome>,
+    mut after_commit: impl FnMut(&[(String, i64, String)]) -> rusqlite::Result<()>,
+) -> rusqlite::Result<()> {
     while let Ok(first) = rx.recv() {
+        let mut made = Vec::new();
         in_transaction(conn, || {
-            store(conn, &first)?;
+            let mut put = |o: Outcome| -> rusqlite::Result<()> {
+                store(conn, &o)?;
+                if let Outcome::Made { rel, member, msg_id, .. } = o {
+                    made.push((member, msg_id, rel));
+                }
+                Ok(())
+            };
+            put(first)?;
             for _ in 1..WRITE_BATCH {
                 match rx.try_recv() {
-                    Ok(o) => store(conn, &o)?,
+                    Ok(o) => put(o)?,
                     Err(_) => break,
                 }
             }
             Ok(())
         })?;
+        if !made.is_empty() {
+            after_commit(&made)?;
+        }
     }
     Ok(())
 }
@@ -420,7 +472,7 @@ mod tests {
     }
 
     fn job(src: PathBuf) -> ThumbJob {
-        ThumbJob { src, rel: "ab/abcd/1.jpg".into(), kind: ThumbKind::Image }
+        ThumbJob { src, rel: "ab/abcd/1.jpg".into(), kind: ThumbKind::Image, member: "m".into(), msg_id: 1 }
     }
 
     /// EXIF の向きを反映する(縦に撮った写真が横倒しのサムネにならない)。
@@ -472,10 +524,16 @@ mod tests {
 
         let (tx, rx) = std::sync::mpsc::channel();
         tx.send(Outcome::Failed { rel: rel.clone(), sig: source_signature(&src) }).unwrap();
-        tx.send(Outcome::Made { rel: "ab/abcd/2.jpg".into(), data: vec![1, 2, 3] }).unwrap();
+        tx.send(made("ab/abcd/2.jpg", vec![1, 2, 3], None)).unwrap();
         tx.send(Outcome::Failed { rel: "ab/abcd/3.jpg".into(), sig: None }).unwrap();
         drop(tx);
-        write_outcomes(&conn, &rx).unwrap();
+        let mut committed = Vec::new();
+        write_outcomes(&conn, &rx, |m| {
+            committed.extend_from_slice(m);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(committed, vec![("m".to_string(), 2, "ab/abcd/2.jpg".to_string())], "保存できたものだけを知らせる");
         assert!(failed_before(&conn, &rel, &src).unwrap());
         assert!(is_stored(&conn, "ab/abcd/2.jpg").unwrap());
         assert!(!failed_before(&conn, "ab/abcd/3.jpg", &src).unwrap(), "元ファイルが読めなければ印を残さない");
@@ -486,13 +544,37 @@ mod tests {
         assert!(!failed_before(&conn, &rel, &src).unwrap(), "差し替えられた元ファイルは作り直す");
 
         let (tx, rx) = std::sync::mpsc::channel();
-        tx.send(Outcome::Made { rel: rel.clone(), data: vec![9] }).unwrap();
+        tx.send(made(&rel, vec![9], source_signature(&src))).unwrap();
         drop(tx);
-        write_outcomes(&conn, &rx).unwrap();
+        write_outcomes(&conn, &rx, |_| Ok(())).unwrap();
         assert!(is_stored(&conn, &rel).unwrap());
+        assert!(is_stored_for(&conn, &rel, &src).unwrap());
         let marks: i64 = conn.query_row("SELECT count(*) FROM thumb_failures", [], |r| r.get(0)).unwrap();
         assert_eq!(marks, 0, "作れたら印は消える");
+
+        // 作った後で元ファイルが差し替えられたら、作り直しの対象になる
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&src, b"replaced again").unwrap();
+        assert!(is_stored(&conn, &rel).unwrap());
+        assert!(!is_stored_for(&conn, &rel, &src).unwrap(), "差し替えられた元ファイルのサムネは作り直す");
+        // 印の無いサムネ(旧版から取り込んだもの)は使える
+        conn.execute("INSERT INTO thumbs (path, data, updated_at) VALUES ('ab/abcd/9.jpg', x'01', 1)", []).unwrap();
+        assert!(is_stored_for(&conn, "ab/abcd/9.jpg", &src).unwrap());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn made(rel: &str, data: Vec<u8>, sig: Option<String>) -> Outcome {
+        let msg_id = rel.rsplit('/').next().unwrap().trim_end_matches(".jpg").parse().unwrap();
+        Outcome::Made { rel: rel.into(), data, sig, member: "m".into(), msg_id }
+    }
+
+    #[test]
+    fn video_options() {
+        assert_eq!(ffmpeg_qscale(100), 2);
+        assert_eq!(ffmpeg_qscale(80), 6);
+        assert_eq!(ffmpeg_qscale(1), 21);
+        assert_eq!(ffmpeg_qscale(0), 22);
+        assert_eq!(ffmpeg_scale_filter(240), "scale=w='min(iw,240)':h='min(ih,240)':force_original_aspect_ratio=decrease");
     }
 
     /// 旧版のサムネフォルダを取り込む。既にあるものは上書きせず、取り込み済みなら2回目は何もしない。

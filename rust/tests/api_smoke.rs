@@ -55,7 +55,8 @@ fn settings_unconfigured() {
     let d = srv.get_json("/api/settings", &[]);
     assert_eq!(d["root"], json!(null));
     assert_eq!(d["configured"], json!(false));
-    assert_eq!(keys(&d), key_set(&["root", "configured", "is_dev", "ffmpeg_available", "ffmpeg_path"]));
+    assert_eq!(keys(&d), key_set(&["root", "configured", "is_dev", "ffmpeg_available", "ffmpeg_path", "root_env_override"]));
+    assert_eq!(d["root_env_override"], json!(false));
     assert_eq!(d["is_dev"], json!(false));
 }
 

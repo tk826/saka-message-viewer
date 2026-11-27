@@ -20,7 +20,7 @@
 - `GET /api/media-path?member=X&msg_id=N` — メッセージのメディアファイルの絶対パス（`{path, exists}`。UIの「パスをコピー」用）
 - `POST /api/reindex?mode=incremental|full&member=X` — 取り込みをバックグラウンドで実行。`mode` 既定は `incremental`（直近 `incremental_months` ヶ月）、`full` で全期間。`member` 指定でそのメンバーのみ（空文字は未指定扱い）。DBは作り直さないため、お気に入り・サムネイルは保持される。既に取り込み・メンバー削除・初期化が実行中なら409
 - `GET /api/reindex/status` — 取り込みの進行状況
-- `GET /api/settings` / `POST /api/settings` — 保存フォルダ（`root`）の取得・設定。設定時に差分取り込みを自動開始する（別の取り込み・メンバー削除・初期化の最中なら始めない。始めたかどうかは応答の `index_started`）
+- `GET /api/settings` / `POST /api/settings` — 保存フォルダ（`root`）の取得・設定。設定時に差分取り込みを自動開始する（取り込み・メンバー削除・初期化の最中は保存せずに 409。保存後に取り込みを始められなかったときは応答の `index_started` が false）
 - `POST /api/reset` — DB・サムネイル・お気に入り・コメント・表示設定（非表示メンバー・並び順）・取り込みの進捗・保存フォルダ設定をすべて削除し初回起動相当の状態に戻す（取り消し不可）。途中で失敗した場合（旧版のサムネイルフォルダの画像を他のプログラムが開いているなど）は何も変更せずに500を返すので、閉じてからやり直す
 - `DELETE /api/members/{member}` — 指定メンバーのメッセージ・お気に入り・コメント・サムネイルをDBから削除する（取り消し不可）。表示設定（非表示・並び順）は残す。`root` フォルダ側のファイルには触れないため、`root` に同名メンバーがまだ存在する場合は次回の取り込みで再度取り込まれる
 - `GET /` — `static/index.html`（本実装のUI）を返す

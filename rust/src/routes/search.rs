@@ -16,10 +16,11 @@ use serde_json::{json, Value};
 const SEARCH_COLS: &str =
     "m.member, m.group_, m.msg_id, m.ts, m.ts_raw, m.body, m.media, m.kind, m.flag, m.thumb, m.missing, m.rowid";
 
-/// SQLite のエラー(FTS5 の構文エラー等)は 400 `search query error: …`。
+/// 検索語が原因の SQLite のエラー(FTS5 の構文エラー等。SQLITE_ERROR)は 400 `search query error: …`。
+/// それ以外(I/O エラー・破損・ビジー・メモリ不足など)は入力のせいではないので、ふつうの DB エラー(500 とログ)にする。
 fn search_error(e: rusqlite::Error) -> ApiError {
     match e {
-        rusqlite::Error::SqliteFailure(_, msg) => {
+        rusqlite::Error::SqliteFailure(f, msg) if f.code == rusqlite::ErrorCode::Unknown => {
             ApiError::bad_request(format!("search query error: {}", msg.unwrap_or_default()))
         }
         other => ApiError::from(other),

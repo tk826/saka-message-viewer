@@ -2,10 +2,14 @@
 /* ==========================================================================
    カレンダー (日付ジャンプ)
    ========================================================================== */
-import { qs, ce, escapeHtml, fetchJson, toast } from "./utils.js";
+import { qs, ce, escapeHtml, fetchJson, toast, makeKeyboardClickable } from "./utils.js";
 import { Sidebar } from "./sidebar.js";
 
 export const CalendarPanel = {
+  // 表示の通し番号。月一覧・日表示を切り替えるたびに進め、応答が届いた時点で変わっていれば捨てる
+  // (月をクリックした直後に「←」を押したとき、後から届いた方で表示が入れ替わらないように)
+  _seq: 0,
+
   init() {
     qs("#calendarBtn").addEventListener("click", () => this.toggle());
     qs(".calendar-close").addEventListener("click", () => this.close());
@@ -38,12 +42,14 @@ export const CalendarPanel = {
   },
 
   async renderMonths() {
+    const seq = ++this._seq;
     qs("#calendarBackBtn").classList.add("hidden");
     qs("#calendarTitle").textContent = "日付ジャンプ";
     const body = qs("#calendarBody");
     body.innerHTML = `<div class="hint">読み込み中...</div>`;
     try {
       const data = await fetchJson(`/api/calendar?member=${encodeURIComponent(Sidebar.selectedMember)}`);
+      if (seq !== this._seq) return;
       body.innerHTML = "";
       const byYear = new Map();
       for (const c of data.calendar) {
@@ -66,17 +72,20 @@ export const CalendarPanel = {
           const cell = ce("div", "calendar-month");
           cell.innerHTML = `<div class="cm-label">${Number(month)}月</div><div class="cm-count">${count}件</div>`;
           cell.addEventListener("click", () => this.renderDays(y, month));
+          makeKeyboardClickable(cell, `${y}年${Number(month)}月 (${count}件)`);
           grid.appendChild(cell);
         }
         body.appendChild(grid);
       }
     } catch (e) {
+      if (seq !== this._seq) return;
       console.error(e);
       body.innerHTML = `<div class="hint">読み込みに失敗しました: ${escapeHtml(e.message)}</div>`;
     }
   },
 
   async renderDays(year, month) {
+    const seq = ++this._seq;
     const yearmonth = `${year}-${month}`;
     qs("#calendarBackBtn").classList.remove("hidden");
     qs("#calendarTitle").textContent = `${year}年${Number(month)}月`;
@@ -86,6 +95,7 @@ export const CalendarPanel = {
       const data = await fetchJson(
         `/api/calendar?member=${encodeURIComponent(Sidebar.selectedMember)}&yearmonth=${yearmonth}`
       );
+      if (seq !== this._seq) return;
       const countByDay = new Map();
       for (const d of data.days) {
         const day = Number(d.date.split("-")[2]);
@@ -121,11 +131,13 @@ export const CalendarPanel = {
             const { App } = await import("./app.js");
             App.jumpToDate(Sidebar.selectedMember, dateStr);
           });
+          makeKeyboardClickable(cell, `${year}年${Number(month)}月${day}日 (${count}件)`);
         }
         grid.appendChild(cell);
       }
       body.appendChild(grid);
     } catch (e) {
+      if (seq !== this._seq) return;
       console.error(e);
       body.innerHTML = `<div class="hint">読み込みに失敗しました: ${escapeHtml(e.message)}</div>`;
     }

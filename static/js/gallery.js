@@ -2,7 +2,7 @@
 /* ==========================================================================
    メディアギャラリーパネル
    ========================================================================== */
-import { qs, ce, escapeHtml, fetchJson, toast, formatLastTs, formatTime, isDevMode } from "./utils.js";
+import { qs, ce, escapeHtml, fetchJson, toast, formatLastTs, formatTime, isDevMode, makeKeyboardClickable } from "./utils.js";
 import { applyNicknamePlaceholder } from "./display-prefs.js";
 import { Sidebar } from "./sidebar.js";
 import { openLightbox } from "./lightbox.js";
@@ -16,6 +16,9 @@ export const GalleryPanel = {
   from: "",   // "" = 下限なし (YYYY-MM-DD)
   to: "",     // "" = 上限なし (YYYY-MM-DD)
   PAGE_SIZE: 60,
+  // 一覧の世代。reload のたびに進め、応答が届いた時点で変わっていればその応答は捨てる
+  // (種別・期間を素早く切り替えたとき、後から届いた古い応答で一覧やカーソルを上書きしない)
+  _gen: 0,
 
   init() {
     qs("#galleryBtn").addEventListener("click", () => this.toggle());
@@ -82,6 +85,8 @@ export const GalleryPanel = {
   },
 
   async reload() {
+    const gen = ++this._gen;
+    this.loading = false; // 前の世代の追加読み込みは、届いても捨てる
     this.hasMore = true;
     this.oldestTs = null;
     this.oldestId = null;
@@ -89,7 +94,8 @@ export const GalleryPanel = {
     grid.innerHTML = `<div class="hint">読み込み中...</div>`;
     qs("#galleryLoadSentinel").classList.add("hidden");
     try {
-      const items = await this.fetchPage();
+      const items = await this.fetchPage(gen);
+      if (items == null) return; // 後から読み込み直した
       grid.innerHTML = "";
       if (items.length === 0) {
         grid.innerHTML = `<div class="hint">メディアがありません</div>`;
@@ -97,12 +103,14 @@ export const GalleryPanel = {
         for (const item of items) grid.appendChild(this.buildItem(item));
       }
     } catch (e) {
+      if (gen !== this._gen) return;
       console.error(e);
       grid.innerHTML = `<div class="hint">読み込みに失敗しました: ${escapeHtml(e.message)}</div>`;
     }
   },
 
-  async fetchPage() {
+  // 1ページ読む。読んでいる間に読み込み直した(世代が変わった)なら、状態を変えずに null を返す。
+  async fetchPage(gen) {
     const params = new URLSearchParams();
     params.set("member", Sidebar.selectedMember);
     if (this.kind) params.set("kind", this.kind);
@@ -114,6 +122,7 @@ export const GalleryPanel = {
       params.set("before_id", String(this.oldestId));
     }
     const data = await fetchJson(`/api/media-list?${params.toString()}`);
+    if (gen !== this._gen) return null;
     const items = data.items || [];
     this.hasMore = !!data.has_more;
     if (items.length > 0) {
@@ -125,19 +134,24 @@ export const GalleryPanel = {
 
   async loadMore() {
     if (this.loading || !this.hasMore) return;
+    const gen = this._gen;
     this.loading = true;
     const sentinel = qs("#galleryLoadSentinel");
     sentinel.textContent = "読み込み中...";
     sentinel.classList.remove("hidden");
     try {
-      const items = await this.fetchPage();
+      const items = await this.fetchPage(gen);
+      if (items == null) return; // 読み込み直した(前の条件の続きを混ぜない)
       const grid = qs("#galleryGrid");
       for (const item of items) grid.appendChild(this.buildItem(item));
     } catch (e) {
+      if (gen !== this._gen) return;
       console.error(e);
     } finally {
-      this.loading = false;
-      sentinel.classList.add("hidden");
+      if (gen === this._gen) {
+        this.loading = false;
+        sentinel.classList.add("hidden");
+      }
     }
   },
 
@@ -161,6 +175,10 @@ export const GalleryPanel = {
       img.loading = "lazy";
       img.src = thumbSrc;
       img.alt = "";
+      // サムネが読めなければ(取り込みの途中で止まったなど)、画像は元のファイルを出す
+      if (msg.thumb_url && msg.kind === "image" && msg.media_url) {
+        img.addEventListener("error", () => { img.src = msg.media_url; }, { once: true });
+      }
       media.appendChild(img);
     } else if (msg.kind === "video" || msg.kind === "audio") {
       const placeholder = ce("div", "gallery-item-placeholder");
@@ -221,6 +239,7 @@ export const GalleryPanel = {
         App.jumpToMessage(msg.member, msg.ts, msg.msg_id);
       }
     });
+    makeKeyboardClickable(cell, `${formatLastTs(msg.ts)} ${formatTime(msg.ts)} の${msg.kind === "image" ? "画像を拡大表示" : "メッセージへ移動"}`);
 
     return cell;
   },

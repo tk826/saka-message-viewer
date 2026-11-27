@@ -43,6 +43,8 @@ pub struct Config {
     pub auto_index_on_startup: bool,
     pub base_dir: PathBuf,
     pub config_path: PathBuf,
+    /// root を環境変数 `MSGVIEWER_ROOT` で上書きしている(設定画面で保存・初期化しても、次の起動で環境変数の値に戻る)
+    pub root_from_env: bool,
 }
 
 impl Config {
@@ -121,6 +123,7 @@ pub fn load_config(config_path: Option<&Path>) -> Result<Config, String> {
     let abs = if path.is_absolute() { path.clone() } else { std::env::current_dir().map_err(|e| e.to_string())?.join(&path) };
     let base = normalize_lexical(&abs).parent().map_or_default(Path::to_path_buf);
 
+    let root_from_env = std::env::var("MSGVIEWER_ROOT").is_ok_and(|v| !v.is_empty());
     let root = env_or("MSGVIEWER_ROOT", raw.root);
     let data_dir = env_or("MSGVIEWER_DATA_DIR", raw.data_dir);
     let db_path = env_or("MSGVIEWER_DB_PATH", raw.db_path);
@@ -141,6 +144,7 @@ pub fn load_config(config_path: Option<&Path>) -> Result<Config, String> {
         auto_index_on_startup: raw.auto_index_on_startup,
         base_dir: base,
         config_path: abs,
+        root_from_env,
     };
 
     std::fs::create_dir_all(&cfg.data_dir).map_err(|e| e.to_string())?;

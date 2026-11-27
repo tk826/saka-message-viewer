@@ -43,6 +43,7 @@ export const App = {
         CalendarPanel.close();
         FavoritesPanel.close();
         GalleryPanel.close();
+        Settings.closeByEscape();
       }
     });
 

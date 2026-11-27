@@ -2,7 +2,7 @@
 /* ==========================================================================
    設定 (メッセージ保存フォルダの指定)
    ========================================================================== */
-import { qs, ce, fetchJson, toast, setDevMode } from "./utils.js";
+import { qs, ce, fetchJson, toast, setDevMode, isImeComposing } from "./utils.js";
 import { Sidebar } from "./sidebar.js";
 import { Reindex } from "./reindex.js";
 import { Timeline } from "./timeline.js";
@@ -16,7 +16,8 @@ export const Settings = {
     qs("#settingsCloseBtn").addEventListener("click", () => this.close());
     qs("#settingsSaveBtn").addEventListener("click", () => this.save());
     qs("#settingsRootInput").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") this.save();
+      // 日本語のフォルダ名を入力中の、変換を確定する Enter では保存しない
+      if (e.key === "Enter" && !isImeComposing(e)) this.save();
     });
     qs("#settingsReindexBtn").addEventListener("click", () => this.startFullReindex());
     qs("#settingsDeleteMemberBtn").addEventListener("click", () => this.deleteMember());
@@ -49,8 +50,19 @@ export const Settings = {
     }
   },
 
+  isOpen() {
+    return !qs("#settingsModal").classList.contains("hidden");
+  },
+
+  // Esc で閉じる。保存先が未設定で閉じられないときは何もしない(案内のトーストも出さない)
+  closeByEscape() {
+    if (this.isOpen() && this.configured) this.close();
+  },
+
   open(forced = false) {
     qs("#settingsError").classList.add("hidden");
+    // 閉じたときに、開く前のフォーカス位置(設定ボタンなど)へ戻す
+    this._returnFocus = document.activeElement;
     qs("#settingsModal").classList.remove("hidden");
     qs("#settingsCloseBtn").classList.toggle("hidden", forced && !this.configured);
     this.switchTab("folder");
@@ -63,6 +75,8 @@ export const Settings = {
       // ffmpegは後から配置されうるので、開くたびに最新の状態を取り直す
       this.refreshFfmpegStatus();
     }
+    // キーボードで操作できるよう、モーダル内に移す
+    qs("#settingsRootInput").focus();
   },
 
   async refreshFfmpegStatus() {
@@ -127,6 +141,16 @@ export const Settings = {
       return;
     }
     qs("#settingsModal").classList.add("hidden");
+    const back = this._returnFocus;
+    this._returnFocus = null;
+    if (back && typeof back.focus === "function" && document.contains(back)) back.focus();
+  },
+
+  // 環境変数 MSGVIEWER_ROOT で保存先を上書きしているときの注意(次の起動で環境変数の値に戻る)。
+  warnEnvOverride(data) {
+    if (data && data.root_env_override) {
+      toast("環境変数 MSGVIEWER_ROOT が設定されているため、次の起動ではその値が保存先になります。", true);
+    }
   },
 
   async save() {
@@ -148,11 +172,16 @@ export const Settings = {
         body: JSON.stringify({ root }),
       });
       const data = await res.json().catch(() => ({}));
+      if (res.status === 409) {
+        // 取り込み・メンバー削除・初期化の最中は保存先を変えられない(保存はされていない)
+        throw new Error("取り込み・削除・初期化の実行中は保存先を変更できません。終わってからもう一度保存してください");
+      }
       if (!res.ok) {
         throw new Error(data.detail || `HTTP ${res.status}`);
       }
       this.configured = true;
-      qs("#settingsModal").classList.add("hidden");
+      this.close();
+      this.warnEnvOverride(data);
       if (data.index_started === false) {
         // 別の取り込み・削除・初期化の最中で、今回の取り込みは始まっていない
         // 実行中の処理があれば poll がその進捗を表示する
@@ -273,11 +302,19 @@ export const Settings = {
     try {
       const res = await fetch("/api/reset", { method: "POST" });
       const data = await res.json().catch(() => ({}));
+      if (res.status === 409) {
+        throw new Error("取り込み・削除の実行中は初期化できません。完了後にもう一度お試しください");
+      }
       if (!res.ok) {
         throw new Error(data.detail || `HTTP ${res.status}`);
       }
-      toast("初期化しました。");
-      setTimeout(() => location.reload(), 600);
+      if (data.root_env_override) {
+        this.warnEnvOverride(data);
+        setTimeout(() => location.reload(), 2500); // 注意を読めるよう少し待つ
+      } else {
+        toast("初期化しました。");
+        setTimeout(() => location.reload(), 600);
+      }
     } catch (e) {
       console.error(e);
       errEl.textContent = e.message;

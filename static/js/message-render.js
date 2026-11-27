@@ -2,7 +2,7 @@
 /* ==========================================================================
    メッセージ描画
    ========================================================================== */
-import { qs, ce, fetchJson, toast, formatTime, formatDateSep } from "./utils.js";
+import { qs, ce, fetchJson, toast, formatTime, formatDateSep, makeKeyboardClickable } from "./utils.js";
 import { applyNicknamePlaceholder } from "./display-prefs.js";
 import { LazyMedia } from "./lazy-media.js";
 import { VolumeBoost } from "./volume-boost.js";
@@ -29,11 +29,16 @@ export function buildMediaEl(msg) {
     if (msg.thumb_url) {
       img.setAttribute("data-src", msg.thumb_url);
       LazyMedia.observe(img);
+      // サムネが読めなければ(取り込みの途中で止まったなど)、元の画像を出す
+      if (msg.media_url) {
+        img.addEventListener("error", () => { img.src = msg.media_url; }, { once: true });
+      }
     } else if (msg.media_url) {
       img.setAttribute("data-src", msg.media_url);
       LazyMedia.observe(img);
     }
     img.addEventListener("click", () => openLightbox(msg));
+    makeKeyboardClickable(img, "画像を拡大表示");
     wrap.appendChild(img);
     return wrap;
   }
@@ -53,6 +58,8 @@ export function buildMediaEl(msg) {
       // プリロードしてloadを検知し、末尾表示中は最下部に追従させる。
       const preloadImg = new Image();
       preloadImg.addEventListener("load", () => Timeline.stickToBottomIfNeeded(), { once: true });
+      // サムネが読めなければ poster を外す(壊れた画像の代わりに、動画の最初のフレームが出る)
+      preloadImg.addEventListener("error", () => video.removeAttribute("poster"), { once: true });
       preloadImg.src = msg.thumb_url;
     }
     if (msg.media_url) {

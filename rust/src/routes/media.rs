@@ -249,15 +249,66 @@ impl Content {
     }
 }
 
-async fn serve_file_with_range(headers: &HeaderMap, path: &Path, policy: CachePolicy) -> ApiResult<Response> {
+/// 開いたファイルの実際のパス(リンク・ジャンクションを解決したもの)。取れなければ None。
+#[cfg(windows)]
+fn opened_path(f: &std::fs::File) -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
+    let h = f.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+    let mut buf = vec![0u16; 512];
+    loop {
+        // SAFETY: h は開いているファイルのハンドル、buf は len 要素の書き込み可能な領域
+        let n = unsafe { GetFinalPathNameByHandleW(h, buf.as_mut_ptr(), buf.len() as u32, 0) } as usize;
+        if n == 0 {
+            return None;
+        }
+        if n < buf.len() {
+            buf.truncate(n);
+            return Some(strip_verbatim(PathBuf::from(std::ffi::OsString::from_wide(&buf))));
+        }
+        buf.resize(n + 1, 0); // 足りなければ必要な長さ(終端の NUL を含む)で取り直す
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn opened_path(f: &std::fs::File) -> Option<PathBuf> {
+    use std::os::fd::AsRawFd;
+    std::fs::read_link(format!("/proc/self/fd/{}", f.as_raw_fd())).ok()
+}
+
+/// 開いたファイルの実際のパスを確かめられない OS では、パスの検証(`safe_resolve`)だけに頼る。
+#[cfg(not(any(windows, target_os = "linux")))]
+fn opened_path(_f: &std::fs::File) -> Option<PathBuf> {
+    None
+}
+
+/// `base` の下のファイルを Range 対応で返す。
+///
+/// パスは `safe_resolve` で検証済みだが、検証してから開くまでの間に root の中のファイルが外を指すリンクに
+/// 差し替えられうる(TOCTOU)。開いた後で、開いたファイルの実際のパスが `base` の下にあるかを確かめ直す。
+async fn serve_file_with_range(headers: &HeaderMap, base: &Path, path: &Path, policy: CachePolicy) -> ApiResult<Response> {
     let p = path.to_path_buf();
-    let opened = blocking(move || -> std::io::Result<(std::fs::File, std::fs::Metadata)> {
-        let f = std::fs::File::open(&p)?;
-        let meta = f.metadata()?;
+    let base = base.to_path_buf();
+    let opened = blocking(move || -> ApiResult<(std::fs::File, std::fs::Metadata)> {
+        let not_found = |_| ApiError::not_found("file not found");
+        let f = std::fs::File::open(&p).map_err(not_found)?;
+        let real_supported = cfg!(any(windows, target_os = "linux"));
+        if real_supported {
+            let base_resolved = resolve_nonstrict(&base);
+            let inside = opened_path(&f).is_some_and(|real| real.starts_with(&base_resolved));
+            if !inside {
+                return Err(ApiError::forbidden("invalid path"));
+            }
+        }
+        let meta = f.metadata().map_err(not_found)?;
+        if !meta.is_file() {
+            return Err(ApiError::not_found("file not found"));
+        }
         Ok((f, meta))
     })
     .await?;
-    let (file, meta) = opened.map_err(|_| ApiError::not_found("file not found"))?;
+    let (file, meta) = opened?;
     let v = Validators::new(meta.len(), meta.modified().ok());
     Ok(respond_with_range(headers, Content::File(file), meta.len(), guess_mime(path), &v, policy))
 }
@@ -337,8 +388,8 @@ pub async fn get_media(
     let Some(root) = st.root() else {
         return Err(ApiError::detail(StatusCode::CONFLICT, "root is not configured"));
     };
-    let file = resolve_blocking(root, path).await?;
-    serve_file_with_range(&headers, &file, CachePolicy::Media).await
+    let file = resolve_blocking(root.clone(), path).await?;
+    serve_file_with_range(&headers, &root, &file, CachePolicy::Media).await
 }
 
 /// サムネは thumbs.db から引く(ファイルシステムには触れない)。キーは `messages.thumb`。

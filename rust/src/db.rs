@@ -32,6 +32,11 @@ CREATE INDEX IF NOT EXISTS idx_ts ON messages(ts);
 CREATE INDEX IF NOT EXISTS idx_member_group_ts ON messages(member, group_, ts);
 ";
 
+/// 検索索引。`messages_fts.rowid` は `messages` の暗黙の rowid と同じ値にしてつなぐ。
+///
+/// 注意: `messages` には `INTEGER PRIMARY KEY` が無いため、VACUUM すると rowid が振り直されることがあり、
+/// 索引が別のメッセージを指すようになる。アプリは VACUUM しない。手動で VACUUM したら、
+/// `message-viewer index --rebuild` で作り直すこと。
 pub const FTS_SQL: &str = "
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
   body, member UNINDEXED, msg_id UNINDEXED, tokenize='trigram'
@@ -68,7 +73,9 @@ CREATE TABLE IF NOT EXISTS member_order (
 /// サムネを作り直さずに済むようにするため(画像の分だけ大きく、作り直しに時間もかかる)。
 ///
 /// - `thumbs.path`: `messages.thumb` と同じ相対パス(`{sha1(member)[:2]}/{sha1(member)}/{msg_id}.jpg`)。
-///   `/thumbs/{path}` の `{path}` もこれ。`updated_at` は書き込んだ時刻(ns)で、ETag・Last-Modified に使う
+///   `/thumbs/{path}` の `{path}` もこれ。`updated_at` は書き込んだ時刻(ns)で、ETag・Last-Modified に使う。
+///   `sig` は作ったときの元ファイルの大きさ・更新日時(`{len}:{mtime_ns}`)で、元ファイルが差し替えられたら作り直す
+///   (旧版から取り込んだサムネや 0.2.0 で作ったサムネは NULL)
 /// - `thumb_failures`: 作れなかったサムネと、そのときの元ファイルの大きさ・更新日時(`{len}:{mtime_ns}`)。
 ///   同じ元ファイルから差分取り込みのたびに作り直そうとしないため
 /// - `meta`: 旧版のサムネフォルダを取り込み済みかなど
@@ -76,7 +83,8 @@ pub const THUMBS_DB_SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS thumbs (
   path       TEXT PRIMARY KEY,
   data       BLOB NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  sig        TEXT
 );
 CREATE TABLE IF NOT EXISTS thumb_failures (
   path TEXT PRIMARY KEY,
@@ -89,13 +97,44 @@ CREATE TABLE IF NOT EXISTS meta (
 ";
 
 /// 共通のPRAGMA。ロック競合時はすぐ失敗せず30秒までリトライ待ちする(database is locked 対策)。
+/// busy_timeout は最初に設定する(journal_mode の切り替え・WAL の復旧と重なったときも待つように)。
 fn apply_pragmas(conn: &Connection, synchronous_normal: bool) -> rusqlite::Result<()> {
+    conn.busy_timeout(std::time::Duration::from_millis(30_000))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     if synchronous_normal {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
     }
-    conn.busy_timeout(std::time::Duration::from_millis(30_000))?;
     Ok(())
+}
+
+/// テーブルに列があるか。
+fn has_column(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let names = stmt.query_map([], |r| r.get::<_, String>(1))?;
+    for n in names {
+        if n? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// 0.2.0 の thumbs.db(`thumbs.sig` 列なし)に列を足す。
+/// 別のプロセス(CLI の取り込みとサーバ)が同時に足そうとして失敗しても、列ができていればよい。
+fn migrate_thumbs_db(conn: &Connection) -> rusqlite::Result<()> {
+    if has_column(conn, "thumbs", "sig")? {
+        return Ok(());
+    }
+    match conn.execute_batch("ALTER TABLE thumbs ADD COLUMN sig TEXT") {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            if has_column(conn, "thumbs", "sig")? {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        }
+    }
 }
 
 /// index.db を開く。`ensure_schema` ならテーブル・インデックス・FTSを作る(起動時に1回だけ行う)。
@@ -132,6 +171,7 @@ pub fn open_thumbs_db(path: &Path, ensure_schema: bool) -> rusqlite::Result<Conn
     apply_pragmas(&conn, true)?;
     if ensure_schema {
         conn.execute_batch(THUMBS_DB_SCHEMA_SQL)?;
+        migrate_thumbs_db(&conn)?;
     }
     Ok(conn)
 }

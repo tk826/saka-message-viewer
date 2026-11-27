@@ -34,7 +34,7 @@ sha1 = "0.10"
 # 取り込みロック(.index.lock)の PID 生存確認
 [target.'cfg(windows)'.dependencies]
 # Win32_System_Console: ダブルクリックで起動されたかの判定(失敗時に Enter を待つため)
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Console"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Console", "Win32_Storage_FileSystem"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

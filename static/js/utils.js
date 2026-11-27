@@ -106,6 +106,46 @@ export function formatLastTs(ts) {
   return `${p.y}/${String(p.m).padStart(2, "0")}/${String(p.day).padStart(2, "0")}`;
 }
 
+// fetchJson を呼び出し側が中断したときのエラーか。
+export function isAbortError(e) {
+  return !!e && e.name === "AbortError";
+}
+
+// IME で変換中の Enter か(確定の Enter で検索・保存を走らせないため)。
+// keyCode 229 は、isComposing を立てない古いブラウザ向けの判定。
+export function isImeComposing(e) {
+  return e.isComposing || e.keyCode === 229;
+}
+
+// localStorage は、サイトのデータ保存を禁止したブラウザなどでは読み書きで例外を投げる。
+// 失敗しても画面は動くよう、例外を握りつぶして既定値を返す。
+export const safeStorage = {
+  get(key) {
+    try { return localStorage.getItem(key); } catch (e) { return null; }
+  },
+  set(key, value) {
+    try { localStorage.setItem(key, value); } catch (e) { /* 保存できなくても動作は続ける */ }
+  },
+  remove(key) {
+    try { localStorage.removeItem(key); } catch (e) { /* 同上 */ }
+  },
+};
+
+// div などをボタンとしてキーボードでも操作できるようにする(Tab で移動し、Enter / Space で click)。
+export function makeKeyboardClickable(el, label) {
+  if (!el.hasAttribute("role")) el.setAttribute("role", "button");
+  if (!el.hasAttribute("tabindex")) el.tabIndex = 0;
+  if (label && !el.hasAttribute("aria-label")) el.setAttribute("aria-label", label);
+  el.addEventListener("keydown", (e) => {
+    if (e.target !== el) return; // 中のボタン等のキー操作はそちらに任せる
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      el.click();
+    }
+  });
+  return el;
+}
+
 export function toast(msg, isError) {
   const el = qs("#toast");
   el.textContent = msg;
@@ -133,19 +173,29 @@ export function setDevMode(v) { _isDevMode = !!v; }
 // 固まって見える)ため、ここで打ち切ってユーザーに状況を伝えられるようにする。
 const FETCH_TIMEOUT_MS = 35000;
 
+// opts.signal を渡すと、呼び出し側からも中断できる(メンバー切り替えなどで古い要求を捨てるため)。
+// 呼び出し側が中断したときは name === "AbortError" のエラーを投げる(isAbortError で判定して無視する)。
 export async function fetchJson(url, opts) {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  const outer = opts && opts.signal;
+  let timedOut = false;
+  const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, FETCH_TIMEOUT_MS);
+  const onOuterAbort = () => controller.abort();
+  if (outer) {
+    if (outer.aborted) controller.abort();
+    else outer.addEventListener("abort", onOuterAbort, { once: true });
+  }
   let res;
   try {
     res = await fetch(url, { ...opts, signal: controller.signal });
   } catch (e) {
-    if (e.name === "AbortError") {
+    if (e.name === "AbortError" && timedOut) {
       throw new Error("サーバの応答がありません(タイムアウト)。取り込み処理が重い可能性があります。");
     }
     throw e;
   } finally {
     clearTimeout(timeoutId);
+    if (outer) outer.removeEventListener("abort", onOuterAbort);
   }
   if (!res.ok) {
     let detail = "";

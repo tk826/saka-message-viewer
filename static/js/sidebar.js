@@ -2,7 +2,7 @@
 /* ==========================================================================
    サイドバー (メンバー一覧)
    ========================================================================== */
-import { qs, ce, fetchJson, toast, isDevMode, formatLastTs } from "./utils.js";
+import { qs, ce, fetchJson, toast, isDevMode, formatLastTs, makeKeyboardClickable } from "./utils.js";
 
 const KANJI_DIGITS = { "一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10 };
 
@@ -24,6 +24,7 @@ export const Sidebar = {
   memberOrder: [],          // 手動で決めた並び順 (user.dbに永続化)。未収載は名前順で後ろに続く
   _dragMember: null,        // ドラッグ中のメンバー名
   _dropped: false,          // 一覧内でdropされたか(falseのままdragendならキャンセル)
+  _renderPending: false,    // ドラッグ中に届いた一覧の更新(ドラッグが終わってから描き直す)
 
   init() {
     qs("#memberEditBtn").addEventListener("click", () => this.toggleEditMode());
@@ -126,6 +127,12 @@ export const Sidebar = {
         console.info(`[Sidebar.load] silent poll: threads ${this.threads.length} -> ${next.length}`);
       }
       this.threads = next;
+      if (silent && this._dragMember != null) {
+        // ドラッグ中に一覧を作り直すと、ドラッグ中の行が DOM から消えて dragend が届かず、
+        // 並び順も保存されない。ドラッグが終わってから描き直す
+        this._renderPending = true;
+        return;
+      }
       this.render();
     } catch (e) {
       console.error(e);
@@ -231,14 +238,20 @@ export const Sidebar = {
       e.dataTransfer.setData("text/plain", member);
     });
 
-    item.addEventListener("dragend", () => {
+    item.addEventListener("dragend", async () => {
       item.classList.remove("dragging");
       this._dragMember = null;
       if (this._dropped) {
-        this.saveOrderFromDom();
+        await this.saveOrderFromDom();
       } else {
         // Escや一覧の外で離した場合はキャンセル。dragover中にDOMを動かして
         // いるので、保存済みの並びで描き直して元に戻す。
+        this.render();
+        this._renderPending = false;
+      }
+      if (this._renderPending) {
+        // ドラッグ中に届いた一覧の更新を反映する(並び順は保存済みの memberOrder を使う)
+        this._renderPending = false;
         this.render();
       }
     });
@@ -358,13 +371,19 @@ export const Sidebar = {
       const { App } = await import("./app.js");
       App.selectMember(t.member);
     });
+    // キーボードでも選べるようにする(Tab で移動、Enter / Space で選択)
+    makeKeyboardClickable(item, `${t.member} (${t.count}件)`);
+    if (t.member === this.selectedMember) item.setAttribute("aria-current", "true");
     return item;
   },
 
   setSelected(member) {
     this.selectedMember = member;
     qs("#memberList").querySelectorAll(".member-item").forEach((el) => {
-      el.classList.toggle("selected", el.dataset.member === member);
+      const sel = el.dataset.member === member;
+      el.classList.toggle("selected", sel);
+      if (sel) el.setAttribute("aria-current", "true");
+      else el.removeAttribute("aria-current");
     });
   },
 };

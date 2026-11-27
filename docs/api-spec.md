@@ -47,7 +47,8 @@
 - 起動時マイグレーション: `favorites.note` 列が残っていれば `message_comments` へコピー（`INSERT OR IGNORE`、note列は削除しない）
 
 **thumbs.db**（サムネの画像。index.db とは別ファイルで、`--rebuild` では消えない。WAL, `synchronous=NORMAL`）
-- `thumbs(path TEXT PK, data BLOB, updated_at)`: `path` は `messages.thumb` と同じキー（§3）。`data` は JPEG、`updated_at` は書き込んだ時刻（ns）
+- `thumbs(path TEXT PK, data BLOB, updated_at, sig)`: `path` は `messages.thumb` と同じキー（§3）。`data` は JPEG、`updated_at` は書き込んだ時刻（ns）、
+  `sig` は作ったときの元ファイルの `{大きさ}:{更新日時ns}`（旧版から取り込んだものと 0.2.0 で作ったものは NULL。起動時に列が無ければ足す）
 - `thumb_failures(path TEXT PK, sig)`: 作れなかったサムネと、そのときの元ファイルの `{大きさ}:{更新日時ns}`
 - `meta(key, value)`: `legacy_thumbs_imported`（旧版のサムネフォルダを取り込み済み）
 - 旧版（0.1.x）はサムネを `thumbs_dir` のフォルダに `{path}`（と作れなかった印 `{msg_id}.failed`）として置いていた。
@@ -99,7 +100,7 @@ SQLite の変数上限（32766）に対し、最大件数は limit(≤500) な�
 - **ページング**: `LIMIT limit+1` で `has_more` 判定。`before` + `before_rowid` があれば `(ts < b OR (ts = b AND rowid < r))`、`before` のみなら `ts < b`
 - **応答**: `query, used_fts, terms{include,exclude}, total, has_more, next_before(=最後の結果のts), next_before_rowid(=最後の行のrowid), results`
   - `total` は初回(`before` 無し)のみ件数、`before` 指定時は null。0件時の `next_before*` は null
-  - SQLiteの構文エラーは 400 `search query error: …`
+  - SQLiteの構文エラー（SQLITE_ERROR）は 400 `search query error: …`。それ以外の SQLite のエラー（I/O・破損・ビジーなど）は 500
 - **スニペット**（FTS/LIKE共通の自前実装。SQLiteの `snippet()` は使わない）
   - 定数: `SNIPPET_CONTEXT=40`, `SNIPPET_MAX=300`, 省略記号 `...`
   - 最初のヒット位置 = 含める語の本文中(大文字小文字を区別しない比較)で最小の位置。無ければ先頭 `SNIPPET_MAX` 文字
@@ -158,7 +159,9 @@ body `{member,msg_id,comment}`。`comment` の空文字/省略/null は**削除*
 - パス解決: `path` が絶対パス・ドライブ指定・UNC（`\\host\share`）、または（Windows で）`:` を含むなら、ファイルシステムに触れずに **403 `invalid path`**
   （`base.join` で `base` ごと置き換わり、確認の前に外部ホストへ SMB 接続してしまうため）。それ以外は `base.join(path)` を正規化し、`base` の外に出れば **403 `invalid path`**（`%2e%2e`/`..%2f` も正規化後に判定）。
   存在する最長の祖先まではシンボリックリンクを解決し、残りは字句的に連結する。存在しない場所への `..` 脱出も、存在チェックより先に403。
-  存在しない/ディレクトリは **404 `file not found`**
+  存在しない/ディレクトリは **404 `file not found`**。
+  検証してから開くまでの間にリンクへ差し替えられた場合に備え、開いた後でもう一度、開いたファイルの実際のパス
+  （Windows は `GetFinalPathNameByHandleW`、Linux は `/proc/self/fd`）が `base` の下にあるかを確かめ、外なら **403**
 - MIME（拡張子、小文字化）: `.jpg/.jpeg`→`image/jpeg`, `.png`→`image/png`, `.mp4`→`video/mp4`, `.txt`→`text/plain; charset=utf-8`, **それ以外は `application/octet-stream`**（`.m4a` 等も）
 - 200/206 には常に `Accept-Ranges: bytes`, `Content-Length`, `Content-Type`。`Range` 無し→200全体
 - **キャッシュ**: 200/206/304 に `ETag`（`"サイズ16進-更新時刻ns16進"`。`/thumbs` の更新時刻は `updated_at`）と `Last-Modified`、`Cache-Control` を付ける（304 はこの3つだけで本文なし）。
@@ -183,12 +186,16 @@ body `{member,msg_id,comment}`。`comment` の空文字/省略/null は**削除*
 返すパスはシンボリックリンク・ジャンクションを解決したもの（ネットワークドライブなら UNC 形式になりうる）。Windows では `\` 区切りのまま返り、`\\?\` 接頭辞は付けない。
 
 ### GET/POST /api/settings
-- GET: `{"root": 文字列|null, "configured": bool, "is_dev": bool, "ffmpeg_available": bool, "ffmpeg_path": 文字列|null}`
+- GET: `{"root": 文字列|null, "configured": bool, "is_dev": bool, "ffmpeg_available": bool, "ffmpeg_path": 文字列|null, "root_env_override": bool}`
 - POST body `{root}`: 前後の空白を除いて 空→400、**絶対パスでない→400**、存在しない/ディレクトリでない→400。
   成功時 設定ファイル（`config-dev.json` 使用中はそちら）の `root` を、前後の空白を除いた入力のまま書き換え（他のキーと順序は保つ。2スペースのインデント + 末尾改行。書けなければ500）、
-  差分取り込みを**バックグラウンドで開始**する。`POST /api/reindex` と同じ確認をして、自/他プロセスの取り込み・メンバー削除・初期化の最中なら始めない（保存は成功なので 200 のまま）。
-  応答 `{"root": 字句的に正規化した絶対パス, "configured": true, "index_started": bool}`
-- 環境変数 `MSGVIEWER_ROOT` が設定されていると、次の起動では書き戻した値より環境変数が優先される（6章）
+  差分取り込みを**バックグラウンドで開始**する。
+  自/他プロセスの取り込み・メンバー削除・初期化の最中は**保存せずに** 409 `{"status":"already_running"[, "detail":"index process pid=N is running"]}`
+  （初期化と同時に保存すると root が消えたり設定ファイルとメモリが食い違ったりし、取り込み中に変えると実行中の取り込みが古い root のまま走るため）。
+  保存の後で取り込みを始められなかったとき（その間に別の取り込みが始まった）は 200 のまま `index_started:false`。
+  応答 `{"root": 字句的に正規化した絶対パス, "configured": true, "index_started": bool, "root_env_override": bool}`
+- 環境変数 `MSGVIEWER_ROOT` が設定されていると、次の起動では書き戻した値より環境変数が優先される（6章）。このとき GET・POST・初期化の応答の
+  `root_env_override` が true になり、画面で知らせる
 
 ### POST /api/reindex?mode&member
 - `root` 未設定→409 `{"status":"root_not_configured"}`。`mode` ∈ incremental(既定)/full 以外→400。`member` の空文字・空白だけは未指定（全メンバー）扱い
@@ -213,7 +220,8 @@ body `{member,msg_id,comment}`。`comment` の空文字/省略/null は**削除*
 
 ### POST /api/reset
 実行中(自/他プロセス)→409 `{"status":"already_running"}`。
-対象: index.db・user.db・thumbs.db（各 `-wal`/`-shm` も）・`progress.json`・旧版のサムネフォルダ（`thumbs_dir`）、設定ファイルの `root`、メモリ上の取り込み状態。応答 `{"status":"reset"}`。
+対象: index.db・user.db・thumbs.db（各 `-wal`/`-shm` も）・`progress.json`・旧版のサムネフォルダ（`thumbs_dir`。`data_dir` の下にあるときだけ。
+外を指していると無関係なファイルを消しうるため）、設定ファイルの `root`、メモリ上の取り込み状態。応答 `{"status":"reset", "root_env_override": bool}`。
 **全部消えるか、何も変わらないかのどちらか**になるよう、2段階で行う。
 1. 対象のうち実在するものを、すべて `<名前>.resetting` に名前を変える（Windows で一時的に開かれている場合に備えて各最大3秒再試行）。
    続けて空の index.db・thumbs.db のスキーマを作り、設定ファイルの `root` を `""` にする（一時ファイル経由で置き換え）。
@@ -226,7 +234,7 @@ body `{member,msg_id,comment}`。`comment` の空文字/省略/null は**削除*
 段階1の間は書き込み側を握って新しい接続を作らせない。thumbs.db も同じ。user.db も同様にロックを握ったまま行う。
 メンバー削除と同じく、処理の間は `.index.lock` を握る（その間に CLI の取り込みも始まらない。`.index.lock` 自体は対象外）。
 別プロセスが握っていれば 409 `{"status":"already_running","detail":"index process pid=N is running"}`（PID が分からなければ `detail` なし）。
-ロックファイルを開けないなど、ロックを取れなかった場合も同じく 409。
+ロックファイルを開けない・ロック操作自体が失敗したなど、競合以外でロックを取れなかった場合は 500（409 にすると原因に気付けない）。
 
 ### DELETE /api/members/{member}
 reset同様に実行中は409、処理の間は `.index.lock` を握る。`messages` と検索索引の行、該当サムネを削除し、`favorites`/`message_comments` から該当メンバーを削除。
@@ -254,7 +262,9 @@ thumbs.db（サムネ・印を1トランザクション）の順に消す。途�
   見つかった行は取り込み時に `missing=0` に戻すので、範囲外として飛ばしても戻し漏れは起きない。
   走査範囲は、走査したメンバーごとに、`full`（とまだ取り込んだことの無いメンバー）なら全期間、`incremental` なら直近月のうち
   **実在した月フォルダ、または直下ファイルがあった年月だけ**。そのため差分取り込みでは、月フォルダごと消えた月は判定されない。
-  また、フォルダが無くなったメンバーは走査対象にならないので、全期間の取り込みでも `missing=1` にならない
+  また、フォルダが無くなったメンバーは走査対象にならないので、全期間の取り込みでも `missing=1` にならない。
+  **読めなかったフォルダ**（ネットワークドライブの瞬断・権限・同期ソフトのロックなど）の範囲も判定しない: メンバーフォルダが読めなければ
+  そのメンバーは判定せず、年・月フォルダや項目の一部が読めなければ、読めた月だけを判定する（`full` でも全期間扱いにしない）
 - 走査パターン4種（グループ有無 × `{YYYY}/{YYYYMM}/`有無）。`incremental` は直近 `incremental_months` ヶ月（ローカル時刻基準）のフォルダのみ。
   まだ取り込んだことの無いメンバーは全期間を走査する
 - **走査順**: 取り込み順が rowid を決め、同じ秒のメッセージの検索順に効く。ディレクトリと直下ファイルは名前順
@@ -262,11 +272,14 @@ thumbs.db（サムネ・印を1トランザクション）の順に消す。途�
 - **サムネ**: 対象は拡張子 `jpg` のファイル（`png` 等は対象外）。無ければ ffmpeg があるときだけ `flag==2 && ext==mp4` の動画。
   - 画像は EXIF の向きを反映してから、長辺 `thumb_size` に収める（拡大しない。端数は縦横比の誤差が小さい方）。JPEG品質 `thumb_quality`
   - 動画は ffmpeg で1フレーム抜き出す（1秒地点、取れなければ先頭。1回30秒でタイムアウトするので1件で最大60秒）。
-    画像と違い、`scale={thumb_size}:-1` で**幅**を `thumb_size` に合わせ（拡大もする）、品質は `-q:v 3` 固定（`thumb_quality` は使わない）
+    画像と同じく長辺を `thumb_size` に収め、拡大はしない（`scale=w='min(iw,S)':h='min(ih,S)':force_original_aspect_ratio=decrease`）。
+    品質は `thumb_quality` を `-q:v`（`2 + (100 - thumb_quality) / 5`、2〜31）に換算する
   - 動画の JPEG は一時ファイルを作らず、ffmpeg の標準出力（`-f image2pipe -c:v mjpeg -`）から受け取る
   - 生成は CPU のスレッド数ぶん並列に行い、thumbs.db への書き込みは1本のスレッドで、届いている分（最大200件）を1トランザクションにまとめて書く。
-    thumbs.db に既にあれば作り直さない
-  - 作れなかったら `thumb_failures` に元ファイルの大きさと更新日時を残し、その行の `thumb` を空にする。差分取り込みでは、元ファイルが
+    thumbs.db に既にあれば作り直さない。ただし `sig` が今の元ファイルと食い違えば（元ファイルが差し替えられた）作り直す
+  - `messages.thumb` は、サムネを thumbs.db に保存できてから設定する（書き込みスレッドが thumbs.db を commit するたびに、
+    その分の `thumb` を index.db に書く）。作る前は空にしておくので、途中で止まっても存在しないサムネを指したまま残らない
+  - 作れなかったら `thumb_failures` に元ファイルの大きさと更新日時を残す（`thumb` は空のまま）。差分取り込みでは、元ファイルが
     変わっていなければ作り直さない（壊れた画像・動画を毎回試さない）。全期間の取り込みでは作り直しを試す。作れたら印は消す
   - thumbs.db に書き込めなくなったら（ディスクがいっぱいなど）、残りは作らずに取り込みをエラーで終える
   - 1枚の失敗で取り込み全体は止めない

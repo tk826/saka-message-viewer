@@ -27,7 +27,9 @@ fn now() -> impl std::fmt::Display {
 /// 1行を `2026-11-13 12:34:56 <本文>` の形で書く(1回の書き込みで出すので、スレッド間で行が混ざらない)。
 pub fn write(args: std::fmt::Arguments) {
     let line = format!("{} {args}", now());
-    eprintln!("{line}");
+    // eprintln! は書けないと(出力先のパイプが閉じているなど)panic する。panic フックもここを通るので、
+    // panic 中の panic でプロセスが abort しないよう、失敗は無視する
+    let _ = writeln!(std::io::stderr().lock(), "{line}");
     let mut file = FILE.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(f) = file.as_mut() {
         // ファイルに書けなくてもサーバは止めない(画面には出ている)

@@ -7,15 +7,20 @@ import { fetchJson, toast } from "./utils.js";
 export const Favorites = {
   ids: new Set(),        // 現在選択中メンバーの msg_id 集合 (★の初期状態反映用)
   _loadedMember: null,   // ids がどのメンバー分か (同一メンバーへの再ジャンプで再取得を省くため)
+  _seq: 0,               // 要求の通し番号。最後に出した要求の応答だけを反映する
 
   async loadForMember(member) {
+    const seq = ++this._seq;
     this.ids = new Set();
     this._loadedMember = member || null;
     if (!member) return;
     try {
       const data = await fetchJson(`/api/favorites/ids?member=${encodeURIComponent(member)}`);
+      // 待っている間に別のメンバーに切り替わっていたら捨てる(前のメンバーの ids で★を付けない)
+      if (seq !== this._seq) return;
       this.ids = new Set(data.msg_ids || []);
     } catch (e) {
+      if (seq !== this._seq) return;
       console.error(e);
     }
   },
