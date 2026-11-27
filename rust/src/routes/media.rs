@@ -1,4 +1,4 @@
-//! /media, /thumbs のファイル配信(Range対応)と /api/media-path。
+//! /media のファイル配信・/thumbs のサムネ配信(thumbs.db から。どちらも Range 対応)と /api/media-path。
 //! (docs/api-spec.md 第4章「GET /media/{path}」)
 //!
 //! `tower-http::ServeFile` は 416 の扱い・`bytes=-N` の超過・不正ヘッダの扱いが仕様と異なるため自前実装する。
@@ -14,8 +14,10 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
 use axum::body::Bytes;
+use rusqlite::OptionalExtension;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// 1回に送るチャンクの大きさ。hyper は1チャンクごとに書き込みが走るため、小さいと遅い
 /// (256MBの全体取得を release ビルドで計測: 1MB≈130MB/s、2MB≈190MB/s、4MB≈200MB/s)。
@@ -194,9 +196,10 @@ struct Validators {
 }
 
 impl Validators {
-    fn new(meta: &std::fs::Metadata) -> Self {
-        let mtime = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
-        let etag = format!("\"{:x}-{:x}\"", meta.len(), mtime.map(|d| d.as_nanos()).unwrap_or(0));
+    /// 大きさと更新日時(ファイルの更新日時、またはサムネを書き込んだ時刻)から作る。
+    fn new(len: u64, modified: Option<SystemTime>) -> Self {
+        let mtime = modified.and_then(|t| t.duration_since(UNIX_EPOCH).ok());
+        let etag = format!("\"{:x}-{:x}\"", len, mtime.map(|d| d.as_nanos()).unwrap_or(0));
         let last_modified = mtime
             .and_then(|d| chrono::DateTime::from_timestamp(d.as_secs() as i64, 0))
             .map(|t| t.format("%a, %d %b %Y %H:%M:%S GMT").to_string());
@@ -230,6 +233,22 @@ impl Validators {
     }
 }
 
+/// 送る中身。ファイル(元のメディア)か、メモリ上のバイト列(thumbs.db のサムネ)。
+enum Content {
+    File(std::fs::File),
+    Bytes(Bytes),
+}
+
+impl Content {
+    /// [start, start+len) の本文。
+    fn body(self, start: u64, len: u64) -> Body {
+        match self {
+            Content::File(f) => file_body(f, start, len),
+            Content::Bytes(b) => Body::from(b.slice(start as usize..(start + len) as usize)),
+        }
+    }
+}
+
 async fn serve_file_with_range(headers: &HeaderMap, path: &Path, policy: CachePolicy) -> ApiResult<Response> {
     let p = path.to_path_buf();
     let opened = blocking(move || -> std::io::Result<(std::fs::File, std::fs::Metadata)> {
@@ -239,12 +258,21 @@ async fn serve_file_with_range(headers: &HeaderMap, path: &Path, policy: CachePo
     })
     .await?;
     let (file, meta) = opened.map_err(|_| ApiError::not_found("file not found"))?;
-    let size = meta.len();
-    let mime = guess_mime(path);
-    let v = Validators::new(&meta);
+    let v = Validators::new(meta.len(), meta.modified().ok());
+    Ok(respond_with_range(headers, Content::File(file), meta.len(), guess_mime(path), &v, policy))
+}
 
+/// 条件付きリクエスト(304)・Range(206/416)を扱って応答を作る。
+fn respond_with_range(
+    headers: &HeaderMap,
+    content: Content,
+    size: u64,
+    mime: &'static str,
+    v: &Validators,
+    policy: CachePolicy,
+) -> Response {
     if v.not_modified(headers) {
-        return Ok(v.apply(Response::builder().status(StatusCode::NOT_MODIFIED), policy).body(Body::empty()).unwrap());
+        return v.apply(Response::builder().status(StatusCode::NOT_MODIFIED), policy).body(Body::empty()).unwrap();
     }
 
     let range = headers
@@ -252,20 +280,20 @@ async fn serve_file_with_range(headers: &HeaderMap, path: &Path, policy: CachePo
         .filter(|_| v.range_allowed(headers))
         .map(|v| String::from_utf8_lossy(v.as_bytes()).into_owned());
     let Some(range) = range else {
-        let body = file_body(file, 0, size);
+        let body = content.body(0, size);
         let b = Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, mime)
             .header(header::ACCEPT_RANGES, "bytes")
             .header(header::CONTENT_LENGTH, size);
-        return Ok(v.apply(b, policy).body(body).unwrap());
+        return v.apply(b, policy).body(body).unwrap();
     };
 
     let Some((start_s, end_s)) = match_range(&range) else {
-        return Ok(range_error(size, "invalid range header", false));
+        return range_error(size, "invalid range header", false);
     };
     if start_s.is_empty() && end_s.is_empty() {
-        return Ok(range_error(size, "invalid range header", false));
+        return range_error(size, "invalid range header", false);
     }
     // 計算は i128 で行う(size==0 のとき end=-1 になるため)
     let size_i = size as i128;
@@ -279,19 +307,19 @@ async fn serve_file_with_range(headers: &HeaderMap, path: &Path, policy: CachePo
     };
     end = end.min(size_i - 1);
     if start > end || start >= size_i {
-        return Ok(range_error(size, "range not satisfiable", true));
+        return range_error(size, "range not satisfiable", true);
     }
 
     let (start, end) = (start as u64, end as u64);
     let len = end - start + 1;
-    let body = file_body(file, start, len);
+    let body = content.body(start, len);
     let b = Response::builder()
         .status(StatusCode::PARTIAL_CONTENT)
         .header(header::CONTENT_TYPE, mime)
         .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{size}"))
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::CONTENT_LENGTH, len);
-    Ok(v.apply(b, policy).body(body).unwrap())
+    v.apply(b, policy).body(body).unwrap()
 }
 
 /// パス解決(ファイルシステムを触る)をブロッキングスレッドで行う。
@@ -313,14 +341,29 @@ pub async fn get_media(
     serve_file_with_range(&headers, &file, CachePolicy::Media).await
 }
 
+/// サムネは thumbs.db から引く(ファイルシステムには触れない)。キーは `messages.thumb`。
 pub async fn get_thumb(
     State(st): State<AppState>,
     AxPath(path): AxPath<String>,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
-    let thumbs_dir = st.cfg.read().unwrap().thumbs_dir.clone();
-    let file = resolve_blocking(thumbs_dir, path).await?;
-    serve_file_with_range(&headers, &file, CachePolicy::Thumb).await
+    // キーの形(上に出ない相対パス)でないものは、/media と同じく403
+    if !is_plain_relative(&path) || Path::new(&path).components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(ApiError::forbidden("invalid path"));
+    }
+    let row: Option<(Vec<u8>, i64)> = st
+        .thumbs_db
+        .run(move |c| {
+            c.query_row("SELECT data, updated_at FROM thumbs WHERE path=?", [&path], |r| Ok((r.get(0)?, r.get(1)?)))
+                .optional()
+        })
+        .await?;
+    let Some((data, updated_at)) = row else {
+        return Err(ApiError::not_found("file not found"));
+    };
+    let size = data.len() as u64;
+    let v = Validators::new(size, Some(UNIX_EPOCH + Duration::from_nanos(updated_at.max(0) as u64)));
+    Ok(respond_with_range(&headers, Content::Bytes(Bytes::from(data)), size, "image/jpeg", &v, CachePolicy::Thumb))
 }
 
 /// 「パスをコピー」用。欠損(missing)していても絶対パスは返し、`exists` で有無を知らせる。

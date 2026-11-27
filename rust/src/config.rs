@@ -17,6 +17,8 @@ struct RawConfig {
     #[serde(default)]
     root: String,
     data_dir: String,
+    /// 旧版のサムネフォルダ(移行元)。無くてもよい
+    #[serde(default = "default_legacy_thumbs_dir")]
     thumbs_dir: String,
     db_path: String,
     port: u16,
@@ -30,7 +32,9 @@ struct RawConfig {
 pub struct Config {
     pub root: Option<PathBuf>,
     pub data_dir: PathBuf,
-    pub thumbs_dir: PathBuf,
+    /// 旧版(0.1.x)がサムネを置いていたフォルダ(設定ファイルの `thumbs_dir`)。今のサムネは thumbs.db に入れ、
+    /// このフォルダは取り込みの移行元としてだけ読む(`indexer::thumbs::import_legacy_dir`)
+    pub legacy_thumbs_dir: PathBuf,
     pub db_path: PathBuf,
     pub port: u16,
     pub thumb_size: u32,
@@ -52,9 +56,17 @@ impl Config {
     pub fn user_db_path(&self) -> PathBuf {
         self.data_dir.join("user.db")
     }
+    /// サムネの画像。index.db とは別ファイル(`--rebuild` で作り直しても残すため)。
+    pub fn thumbs_db_path(&self) -> PathBuf {
+        self.data_dir.join("thumbs.db")
+    }
     pub fn is_dev(&self) -> bool {
         self.config_path.file_name().and_then(|n| n.to_str()) == Some(CONFIG_DEV_FILENAME)
     }
+}
+
+fn default_legacy_thumbs_dir() -> String {
+    "./data/thumbs".into()
 }
 
 fn env_or(name: &str, default: String) -> String {
@@ -120,7 +132,7 @@ pub fn load_config(config_path: Option<&Path>) -> Result<Config, String> {
     let cfg = Config {
         root: if root.is_empty() { None } else { Some(resolve_path(&base, &root)) },
         data_dir: resolve_path(&base, &data_dir),
-        thumbs_dir: resolve_path(&base, &thumbs_dir),
+        legacy_thumbs_dir: resolve_path(&base, &thumbs_dir),
         db_path: resolve_path(&base, &db_path),
         port,
         thumb_size: raw.thumb_size,
@@ -132,7 +144,6 @@ pub fn load_config(config_path: Option<&Path>) -> Result<Config, String> {
     };
 
     std::fs::create_dir_all(&cfg.data_dir).map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&cfg.thumbs_dir).map_err(|e| e.to_string())?;
     if let Some(parent) = cfg.db_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }

@@ -145,6 +145,55 @@ fn thumbs_generated_and_served() {
     assert_eq!(srv.get(&thumb_url("member_a", 999)).status, 404);
 }
 
+/// サムネは thumbs.db に入り、旧版のようなサムネのフォルダは作らない。
+#[test]
+fn thumbs_are_stored_in_db() {
+    let srv = Server::indexed();
+    let data = srv.data_dir();
+    assert!(!data.join("thumbs").exists(), "サムネのフォルダは作らない");
+    let rel = thumb_url("member_a", 6).trim_start_matches("/thumbs/").to_string();
+    let db = rusqlite::Connection::open(data.join("thumbs.db")).unwrap();
+    let stored: Vec<u8> = db.query_row("SELECT data FROM thumbs WHERE path=?", [&rel], |r| r.get(0)).unwrap();
+    assert_eq!(srv.get(&thumb_url("member_a", 6)).body, stored);
+    // 部分取得・条件付き取得もできる
+    let r = srv.get_h(&thumb_url("member_a", 6), &[("Range", "bytes=0-1")]);
+    assert_eq!((r.status, r.body), (206, stored[..2].to_vec()));
+    let etag = srv.get(&thumb_url("member_a", 6)).header("etag").to_string();
+    assert_eq!(srv.get_h(&thumb_url("member_a", 6), &[("If-None-Match", &etag)]).status, 304);
+}
+
+/// 旧版のサムネのフォルダ(data/thumbs)は、起動時に thumbs.db へ取り込む。フォルダは消さない。
+#[test]
+fn legacy_thumbs_folder_is_imported_on_startup() {
+    let srv = Server::indexed();
+    let data = srv.data_dir();
+    let sandbox = srv.stop_keep();
+    // 取り込み済みの印を消し、旧版が残したフォルダがある状態にする
+    let db = rusqlite::Connection::open(data.join("thumbs.db")).unwrap();
+    db.execute("DELETE FROM meta", []).unwrap();
+    db.execute("DELETE FROM thumbs WHERE path GLOB 'zz/*'", []).unwrap();
+    drop(db);
+    let legacy = data.join("thumbs").join("zz").join("zzzz");
+    std::fs::create_dir_all(&legacy).unwrap();
+    std::fs::write(legacy.join("7.jpg"), b"legacy-jpeg").unwrap();
+    std::fs::write(legacy.join("8.failed"), b"1:2").unwrap();
+
+    let srv = Server::restart(sandbox);
+    let t0 = Instant::now();
+    let r = loop {
+        let r = srv.get("/thumbs/zz/zzzz/7.jpg");
+        if r.status == 200 || t0.elapsed() > Duration::from_secs(10) {
+            break r;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!((r.status, r.body), (200, b"legacy-jpeg".to_vec()));
+    assert!(legacy.join("7.jpg").exists(), "旧フォルダは消さない");
+    assert!(srv.log().contains("imported 1 thumbnails and 1 failure marks"), "{}", srv.log());
+    // 既存のサムネも引き続き出る
+    assert_eq!(srv.get(&thumb_url("member_a", 6)).status, 200);
+}
+
 // ------------------------------------------------------------- media-path
 #[test]
 fn media_path() {
@@ -542,7 +591,7 @@ fn reset() {
     assert_eq!(srv.config_json()["root"], json!(""));
     let data = srv.data_dir();
     assert!(!data.join("progress.json").exists());
-    assert!(data.join("index.db").exists() && data.join("thumbs").is_dir());
+    assert!(data.join("index.db").exists() && data.join("thumbs.db").exists());
     assert_eq!(srv.get("/media/member_a/2026/202608/6_1_20260807000000.jpg").status, 409); // root 未設定
     // 初期化の直後も各 API は普通に使える(接続の張り直し)
     assert_eq!(srv.get_json("/api/search", &[("q", "ライブ")])["total"], json!(0));
@@ -563,7 +612,7 @@ fn resetting_leftovers(data: &Path) -> Vec<String> {
     v
 }
 
-/// 初期化の途中で失敗したら(サムネを他のプロセスが開いていて動かせない)、何も変えずに 500。
+/// 初期化の途中で失敗したら(旧版のサムネのフォルダのファイルを他のプロセスが開いていて動かせない)、何も変えずに 500。
 /// 閉じてからやり直せば初期化できる。Windows では開いているファイルを含むフォルダの名前を変えられないことを使う。
 #[cfg(windows)]
 #[test]
@@ -574,9 +623,11 @@ fn reset_is_all_or_nothing() {
     srv.put("/api/comments", &json!({ "member": "member_a", "msg_id": 1, "comment": "x" }));
     let root_before = srv.config_json()["root"].clone();
     let data = srv.data_dir();
-    let rel = thumb_url("member_a", 6).trim_start_matches("/thumbs/").to_string();
+    let legacy = data.join("thumbs").join("ab").join("x.jpg");
+    std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+    std::fs::write(&legacy, b"old").unwrap();
     // エクスプローラーのプレビューなどと同じく、削除・名前の変更を許さずに開く(FILE_SHARE_READ のみ)
-    let held = std::fs::OpenOptions::new().read(true).share_mode(1).open(data.join("thumbs").join(&rel)).unwrap();
+    let held = std::fs::OpenOptions::new().read(true).share_mode(1).open(&legacy).unwrap();
 
     let r = srv.post("/api/reset", &json!({}));
     assert_eq!(r.status, 500);
@@ -585,6 +636,7 @@ fn reset_is_all_or_nothing() {
     assert_eq!(srv.get_json("/api/threads", &[]).as_array().unwrap().len(), 2);
     assert_eq!(srv.get_json("/api/favorites", &[])["favorites"].as_array().unwrap().len(), 1);
     assert_eq!(srv.get_json("/api/messages", &[("member", "member_a")])["messages"][0]["comment"], json!("x"));
+    assert_eq!(srv.get(&thumb_url("member_a", 6)).status, 200);
     assert_eq!(srv.config_json()["root"], root_before);
     assert_eq!(srv.get_json("/api/settings", &[])["configured"], json!(true));
     assert_eq!(resetting_leftovers(&data), Vec::<String>::new());

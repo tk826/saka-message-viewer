@@ -49,6 +49,8 @@ pub struct AppState {
     /// `root` は /api/settings で変わるため RwLock。
     pub cfg: Arc<RwLock<Config>>,
     pub db: Arc<Db>,
+    /// thumbs.db(サムネの画像)
+    pub thumbs_db: Arc<Db>,
     pub user_db: Arc<UserDb>,
     pub static_dir: PathBuf,
     pub reindex: Arc<ReindexCtl>,

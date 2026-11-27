@@ -3,10 +3,10 @@
 //! どちらも取り込みと相互排他する。取り込み中(自プロセス、または `.index.lock` を握る別プロセス)なら409。
 
 use crate::config::{write_root, Config};
-use crate::db::open_index_db;
+use crate::db::{open_index_db, open_thumbs_db};
 use crate::error::{blocking, ApiError, ApiResult};
+use crate::indexer::thumb_member_prefix;
 use crate::indexlock::{read_lock_pid, IndexLock};
-use crate::routes::media::safe_resolve_no_exist_check;
 use crate::state::AppState;
 use axum::extract::{Path as AxPath, State};
 use axum::Json;
@@ -43,8 +43,8 @@ fn exclusive(st: &AppState) -> ApiResult<(OwnedMutexGuard<()>, IndexLock)> {
 /// 検索索引 messages_fts の行も同時に消す。索引行が孤児として残ると、最後に取り込まれたメンバーを削除して
 /// 再取り込みしたときに rowid が衝突して取り込みが失敗する。
 ///
-/// index.db と user.db は別ファイルで1つのトランザクションにできないため、user.db(お気に入り・コメント)→
-/// index.db(メッセージ・検索索引)→ サムネのファイル の順に消す。途中で失敗してもメッセージが残っていれば
+/// index.db・user.db・thumbs.db は別ファイルで1つのトランザクションにできないため、user.db(お気に入り・コメント)→
+/// index.db(メッセージ・検索索引)→ thumbs.db(サムネ)の順に消す。途中で失敗してもメッセージが残っていれば
 /// メンバーは一覧に出たままなので、画面からもう一度削除すれば最後まで消せる
 /// (逆順だと、メッセージだけ消えて一覧から見えなくなり、お気に入り・コメントが見えないまま残る)。
 pub async fn delete_member(State(st): State<AppState>, AxPath(member): AxPath<String>) -> ApiResult<Json<Value>> {
@@ -64,31 +64,28 @@ pub async fn delete_member(State(st): State<AppState>, AxPath(member): AxPath<St
         .await?;
 
     let m = member.clone();
-    let (deleted, thumbs): (usize, Vec<String>) = st
+    let deleted: usize = st
         .db
         .run(move |c| {
-            let thumbs = {
-                let mut stmt = c.prepare("SELECT thumb FROM messages WHERE member=? AND thumb IS NOT NULL")?;
-                let rows = stmt.query_map([&m], |r| r.get::<_, String>(0))?;
-                rows.collect::<rusqlite::Result<Vec<_>>>()?
-            };
             let tx = c.unchecked_transaction()?;
             tx.execute("DELETE FROM messages_fts WHERE rowid IN (SELECT rowid FROM messages WHERE member=?)", [&m])?;
             let n = tx.execute("DELETE FROM messages WHERE member=?", [&m])?;
             tx.commit()?;
-            Ok((n, thumbs))
+            Ok(n)
         })
         .await?;
 
-    let thumbs_dir = st.cfg.read().unwrap().thumbs_dir.clone();
-    blocking(move || {
-        for rel in thumbs {
-            if let Ok(p) = safe_resolve_no_exist_check(&thumbs_dir, &rel) {
-                let _ = std::fs::remove_file(p);
-            }
-        }
-    })
-    .await?;
+    // サムネのキーはメンバー名の sha1 で始まるので、先頭一致で消す(作れなかった印も)。
+    // 消した分の領域はファイルを縮めずに残り、以後のサムネの書き込みに使われる
+    let pattern = format!("{}*", thumb_member_prefix(&member));
+    st.thumbs_db
+        .run(move |c| {
+            let tx = c.unchecked_transaction()?;
+            tx.execute("DELETE FROM thumbs WHERE path GLOB ?", [&pattern])?;
+            tx.execute("DELETE FROM thumb_failures WHERE path GLOB ?", [&pattern])?;
+            tx.commit()
+        })
+        .await?;
 
     Ok(Json(json!({ "status": "ok", "member": member, "deleted_messages": deleted })))
 }
@@ -119,9 +116,10 @@ fn with_suffix(p: &Path, suffix: &str) -> PathBuf {
 const RESET_TRASH_SUFFIX: &str = ".resetting";
 
 /// 初期化で消すもの(無いものは飛ばす)。.index.lock はこの処理自身が握っているので含めない(PID ファイルは解放時に消える)。
-/// サムネのフォルダは、開かれているファイルがあると名前を変えられないことが多いので最後に置く(戻す数が増えないように)。
+/// 旧版のサムネのフォルダは、開かれているファイルがあると名前を変えられないことが多いので最後に置く(戻す数が増えないように)。
 fn reset_targets(cfg: &Config) -> Vec<PathBuf> {
     let udb = cfg.user_db_path();
+    let tdb = cfg.thumbs_db_path();
     vec![
         cfg.db_path.clone(),
         with_suffix(&cfg.db_path, "-wal"),
@@ -129,8 +127,11 @@ fn reset_targets(cfg: &Config) -> Vec<PathBuf> {
         udb.clone(),
         with_suffix(&udb, "-wal"),
         with_suffix(&udb, "-shm"),
+        tdb.clone(),
+        with_suffix(&tdb, "-wal"),
+        with_suffix(&tdb, "-shm"),
         cfg.progress_json_path(),
-        cfg.thumbs_dir.clone(),
+        cfg.legacy_thumbs_dir.clone(),
     ]
 }
 
@@ -202,17 +203,17 @@ fn restore(moved: &[PathBuf]) {
     }
 }
 
-/// 空の状態を作る(サムネのフォルダ・index.db のスキーマ・設定ファイルの root を空に)。
+/// 空の状態を作る(index.db・thumbs.db のスキーマ、設定ファイルの root を空に)。
 /// user.db は次の利用時に空のスキーマで開き直される。
 fn create_fresh(cfg: &Config) -> std::io::Result<()> {
-    std::fs::create_dir_all(&cfg.thumbs_dir)?;
     open_index_db(&cfg.db_path, true).map_err(std::io::Error::other)?;
+    open_thumbs_db(&cfg.thumbs_db_path(), true).map_err(std::io::Error::other)?;
     // 一時ファイルに書いてから置き換えるので、失敗しても設定ファイルは元のまま
     write_root(cfg, "").map_err(std::io::Error::other)?;
     Ok(())
 }
 
-/// DB・サムネ・お気に入り等・保存フォルダ設定をすべて消し、初回起動相当に戻す(取り消し不可)。
+/// DB・サムネ(thumbs.db と旧版のサムネのフォルダ)・お気に入り等・保存フォルダ設定をすべて消し、初回起動相当に戻す(取り消し不可)。
 ///
 /// 途中で失敗して中途半端に消えた状態を残さないよう、2段階で行う。
 /// 1. 消す対象をすべて一時的な名前(`*.resetting`)に変え、空の状態を作って設定ファイルの root を空にする。
@@ -226,22 +227,24 @@ pub async fn reset(State(st): State<AppState>) -> ApiResult<Json<Value>> {
     blocking(move || -> Result<(), String> {
         cleanup_reset_leftovers(&cfg);
         let targets = reset_targets(&cfg);
-        // 両方の DB の接続を閉じ、新しい接続を作らせない状態で行う(Windows では開いたままだと名前を変えられない)
+        // すべての DB の接続を閉じ、新しい接続を作らせない状態で行う(Windows では開いたままだと名前を変えられない)
         st2.db.while_closed(|| {
-            st2.user_db.while_closed(|| -> Result<(), String> {
-                let moved = move_aside(&targets).map_err(|e| format!("初期化できませんでした(何も変更していません): {e}"))?;
-                if let Err(e) = create_fresh(&cfg) {
-                    // 作りかけ(新しい index.db・サムネのフォルダ)を消して元に戻す。
-                    // 対象のうち実在したものはすべて名前を変えてあるので、今ある対象は作りかけだけ
-                    for t in &targets {
-                        if let Err(e) = remove_any(t) {
-                            logln!("[reset] error: 作りかけの {} を削除できませんでした: {e}", t.display());
+            st2.thumbs_db.while_closed(|| {
+                st2.user_db.while_closed(|| -> Result<(), String> {
+                    let moved = move_aside(&targets).map_err(|e| format!("初期化できませんでした(何も変更していません): {e}"))?;
+                    if let Err(e) = create_fresh(&cfg) {
+                        // 作りかけ(新しい index.db・thumbs.db)を消して元に戻す。
+                        // 対象のうち実在したものはすべて名前を変えてあるので、今ある対象は作りかけだけ
+                        for t in &targets {
+                            if let Err(e) = remove_any(t) {
+                                logln!("[reset] error: 作りかけの {} を削除できませんでした: {e}", t.display());
+                            }
                         }
+                        restore(&moved);
+                        return Err(format!("初期化できませんでした(何も変更していません): {e}"));
                     }
-                    restore(&moved);
-                    return Err(format!("初期化できませんでした(何も変更していません): {e}"));
-                }
-                Ok(())
+                    Ok(())
+                })
             })
         })?;
         for t in &targets {

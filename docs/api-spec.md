@@ -46,6 +46,14 @@
   `hidden_members(member,hidden_at)`, `member_order(member,position,updated_at)`
 - 起動時マイグレーション: `favorites.note` 列が残っていれば `message_comments` へコピー（`INSERT OR IGNORE`、note列は削除しない）
 
+**thumbs.db**（サムネの画像。index.db とは別ファイルで、`--rebuild` では消えない。WAL, `synchronous=NORMAL`）
+- `thumbs(path TEXT PK, data BLOB, updated_at)`: `path` は `messages.thumb` と同じキー（§3）。`data` は JPEG、`updated_at` は書き込んだ時刻（ns）
+- `thumb_failures(path TEXT PK, sig)`: 作れなかったサムネと、そのときの元ファイルの `{大きさ}:{更新日時ns}`
+- `meta(key, value)`: `legacy_thumbs_imported`（旧版のサムネフォルダを取り込み済み）
+- 旧版（0.1.x）はサムネを `thumbs_dir` のフォルダに `{path}`（と作れなかった印 `{msg_id}.failed`）として置いていた。
+  起動時と取り込みの開始時に、そのフォルダを thumbs.db へ取り込む（既にあるものは上書きしない。0バイトと `*.part.jpg` は飛ばす）。
+  すべて読めたら `meta` に印を付け、以後はフォルダを見ない。**フォルダは消さない**（旧版に戻したときのため。不要なら利用者が消す）
+
 **index.db と user.db は JOIN できない**ため、コメントは `(member,msg_id)` で突き合わせる（`OR` 連結のプレースホルダ）。
 SQLite の変数上限（32766）に対し、最大件数は limit(≤500) なので収まる。
 
@@ -56,9 +64,9 @@ SQLite の変数上限（32766）に対し、最大件数は limit(≤500) な�
 ```
 - `group`: `group_` 列。`missing`: bool。`media_url`: `"/media/" + media` または null。`thumb_url`: `"/thumbs/" + thumb` または null（どちらも空文字は null）。
   `media`/`thumb` は `/` で区切った各部分を**パーセントエンコード**して連結する（英数字と `- . _ ~` 以外。日本語・空白・`#`・`%` も）。
-  `/media`・`/thumbs` はエンコードを戻してからファイルを探すので、`#` や `%XX` を含む名前でもそのまま使える
+  `/media`・`/thumbs` はエンコードを戻してからファイル・サムネを探すので、`#` や `%XX` を含む名前でもそのまま使える
 - `comment`: `message_comments` 由来の文字列 / null。`/api/search` は追加で `snippet`、`/api/favorites` は追加で `created_at`
-- サムネの相対パス: `sha1(member の UTF-8)` の16進 `h` → `{h[:2]}/{h}/{msg_id}.jpg`
+- サムネのキー（`messages.thumb`・thumbs.db の `path`）: `sha1(member の UTF-8)` の16進 `h` → `{h[:2]}/{h}/{msg_id}.jpg`
 
 ## 4. エンドポイント別の細部
 
@@ -144,14 +152,16 @@ body `{member,msg_id,comment}`。`comment` の空文字/省略/null は**削除*
   **全置換**（DELETE→INSERT）。応答 `{"status":"ok","count"}`
 
 ### GET /media/{path}, /thumbs/{path}
-- `/media` は `root` 未設定で **409** `root is not configured`。`/thumbs` は `thumbs_dir` 基準
+- `/media` は `root` 未設定で **409** `root is not configured`。
+  `/thumbs` は thumbs.db の `path` で引く（ファイルシステムには触れない）。下記の403になる形と、`..` を含む `path` は **403 `invalid path`**、
+  無ければ **404 `file not found`**。`Content-Type` は常に `image/jpeg`。以下のパス解決は `/media` だけ
 - パス解決: `path` が絶対パス・ドライブ指定・UNC（`\\host\share`）、または（Windows で）`:` を含むなら、ファイルシステムに触れずに **403 `invalid path`**
   （`base.join` で `base` ごと置き換わり、確認の前に外部ホストへ SMB 接続してしまうため）。それ以外は `base.join(path)` を正規化し、`base` の外に出れば **403 `invalid path`**（`%2e%2e`/`..%2f` も正規化後に判定）。
   存在する最長の祖先まではシンボリックリンクを解決し、残りは字句的に連結する。存在しない場所への `..` 脱出も、存在チェックより先に403。
   存在しない/ディレクトリは **404 `file not found`**
 - MIME（拡張子、小文字化）: `.jpg/.jpeg`→`image/jpeg`, `.png`→`image/png`, `.mp4`→`video/mp4`, `.txt`→`text/plain; charset=utf-8`, **それ以外は `application/octet-stream`**（`.m4a` 等も）
 - 200/206 には常に `Accept-Ranges: bytes`, `Content-Length`, `Content-Type`。`Range` 無し→200全体
-- **キャッシュ**: 200/206/304 に `ETag`（`"サイズ16進-更新時刻ns16進"`）と `Last-Modified`、`Cache-Control` を付ける（304 はこの3つだけで本文なし）。
+- **キャッシュ**: 200/206/304 に `ETag`（`"サイズ16進-更新時刻ns16進"`。`/thumbs` の更新時刻は `updated_at`）と `Last-Modified`、`Cache-Control` を付ける（304 はこの3つだけで本文なし）。
   更新時刻が取れないファイルは `Last-Modified` を付けず、`ETag` の時刻部は `0`。
   `Cache-Control` は `/thumbs` が `max-age=86400`（パスが (member, msg_id) で決まり中身はまず変わらない）、`/media` が `no-cache`（毎回検証）。
   `If-None-Match` が一致（`*`・弱い比較可）すれば **304**。`If-None-Match` が無いときだけ `If-Modified-Since` を見る（送り返された日付との一致のみ）。
@@ -203,26 +213,26 @@ body `{member,msg_id,comment}`。`comment` の空文字/省略/null は**削除*
 
 ### POST /api/reset
 実行中(自/他プロセス)→409 `{"status":"already_running"}`。
-対象: index.db・user.db（各 `-wal`/`-shm` も）・`progress.json`・`thumbs_dir`、設定ファイルの `root`、メモリ上の取り込み状態。応答 `{"status":"reset"}`。
+対象: index.db・user.db・thumbs.db（各 `-wal`/`-shm` も）・`progress.json`・旧版のサムネフォルダ（`thumbs_dir`）、設定ファイルの `root`、メモリ上の取り込み状態。応答 `{"status":"reset"}`。
 **全部消えるか、何も変わらないかのどちらか**になるよう、2段階で行う。
 1. 対象のうち実在するものを、すべて `<名前>.resetting` に名前を変える（Windows で一時的に開かれている場合に備えて各最大3秒再試行）。
-   続けて空の `thumbs_dir`・index.db のスキーマを作り、設定ファイルの `root` を `""` にする（一時ファイル経由で置き換え）。
+   続けて空の index.db・thumbs.db のスキーマを作り、設定ファイルの `root` を `""` にする（一時ファイル経由で置き換え）。
    どこかで失敗したら、作りかけを消して名前を元に戻し、500 `{"detail":"初期化できませんでした(何も変更していません): …"}`。
    Windows では開かれているファイル（を含むフォルダ）は名前も変えられないので、何かを消す前に失敗が分かる
-   （例: エクスプローラーのプレビューがサムネを開いている）。閉じてからやり直せばよい
+   （例: エクスプローラーのプレビューが旧版のサムネフォルダの画像を開いている）。閉じてからやり直せばよい
 2. `*.resetting` を消す。消し損ねても初期化は済んでいて、残りは次の初期化の前と、サーバの起動時に消す。user.db は次の利用時に空のスキーマで開き直される
 
 **Windowsでは開いたままのハンドルがあると名前の変更・削除に失敗する**ため、index.db の利用をゲート（RwLock）で囲み、
-段階1の間は書き込み側を握って新しい接続を作らせない。user.db も同様にロックを握ったまま行う。
+段階1の間は書き込み側を握って新しい接続を作らせない。thumbs.db も同じ。user.db も同様にロックを握ったまま行う。
 メンバー削除と同じく、処理の間は `.index.lock` を握る（その間に CLI の取り込みも始まらない。`.index.lock` 自体は対象外）。
 別プロセスが握っていれば 409 `{"status":"already_running","detail":"index process pid=N is running"}`（PID が分からなければ `detail` なし）。
 ロックファイルを開けないなど、ロックを取れなかった場合も同じく 409。
 
 ### DELETE /api/members/{member}
 reset同様に実行中は409、処理の間は `.index.lock` を握る。`messages` と検索索引の行、該当サムネを削除し、`favorites`/`message_comments` から該当メンバーを削除。
-消すサムネは `messages.thumb` に記録されたファイルだけ（`{msg_id}.failed` の印とメンバーのサムネフォルダは残る）。
-index.db と user.db は1つのトランザクションにできないため、user.db（お気に入り・コメントを1トランザクション）→ index.db（メッセージ・検索索引を1トランザクション）→
-サムネのファイル（失敗は無視）の順に消す。途中で失敗すると500だが、メッセージが残っている限りメンバーは一覧に出たままなので、もう一度削除すれば最後まで消せる。
+サムネは thumbs.db から、キーがメンバーの `{h[:2]}/{h}/` で始まるものを作れなかった印ごと消す（`GLOB`。消した領域はファイルを縮めずに再利用される）。
+3つの DB は1つのトランザクションにできないため、user.db（お気に入り・コメントを1トランザクション）→ index.db（メッセージ・検索索引を1トランザクション）→
+thumbs.db（サムネ・印を1トランザクション）の順に消す。途中で失敗すると500だが、メッセージが残っている限りメンバーは一覧に出たままなので、もう一度削除すれば最後まで消せる。
 応答 `{"status":"ok","member","deleted_messages": 件数}`。存在しないメンバーでも 200（0件）。**root側のファイルは触らない**。
 表示設定（`hidden_members`/`member_order`）は消さない。
 検索索引の行を残すと、SQLite が削除後に最大 rowid を再利用したときに、再取り込みで rowid が衝突したり、
@@ -253,9 +263,12 @@ index.db と user.db は1つのトランザクションにできないため、u
   - 画像は EXIF の向きを反映してから、長辺 `thumb_size` に収める（拡大しない。端数は縦横比の誤差が小さい方）。JPEG品質 `thumb_quality`
   - 動画は ffmpeg で1フレーム抜き出す（1秒地点、取れなければ先頭。1回30秒でタイムアウトするので1件で最大60秒）。
     画像と違い、`scale={thumb_size}:-1` で**幅**を `thumb_size` に合わせ（拡大もする）、品質は `-q:v 3` 固定（`thumb_quality` は使わない）
-  - 一時ファイル（`{msg_id}.part.jpg`）に書いてから置き換える。サムネファイルが既にあれば作り直さない（0バイトは無いものとして作り直す）
-  - 作れなかったら `{msg_id}.failed`（元ファイルの大きさと更新日時）を残し、その行の `thumb` を空にする。差分取り込みでは、元ファイルが
-    変わっていなければ作り直さない（壊れた画像・動画を毎回試さない）。全期間の取り込みでは作り直しを試す
+  - 動画の JPEG は一時ファイルを作らず、ffmpeg の標準出力（`-f image2pipe -c:v mjpeg -`）から受け取る
+  - 生成は CPU のスレッド数ぶん並列に行い、thumbs.db への書き込みは1本のスレッドで、届いている分（最大200件）を1トランザクションにまとめて書く。
+    thumbs.db に既にあれば作り直さない
+  - 作れなかったら `thumb_failures` に元ファイルの大きさと更新日時を残し、その行の `thumb` を空にする。差分取り込みでは、元ファイルが
+    変わっていなければ作り直さない（壊れた画像・動画を毎回試さない）。全期間の取り込みでは作り直しを試す。作れたら印は消す
+  - thumbs.db に書き込めなくなったら（ディスクがいっぱいなど）、残りは作らずに取り込みをエラーで終える
   - 1枚の失敗で取り込み全体は止めない
 - **ffmpeg の探索順**: 設定ファイルのディレクトリ → 実行ファイルのディレクトリ（それぞれ `bin/` → 直下）→ PATH
 - 排他: `data/.index.lock` の OS ファイルロック（`File::try_lock`）。保持者が異常終了しても OS が解放するので、PID の再利用や空ファイルで誤判定しない。
@@ -264,7 +277,7 @@ index.db と user.db は1つのトランザクションにできないため、u
   進捗は `data/progress.json` を一時ファイル+rename で原子的に書く。進捗ファイルを書き終えてからロックを解放する
 - CLI（[docs/cli.md](cli.md)）: `message-viewer [--config <path>] index [--full|--incremental|--rebuild] [--only-member X] [--no-thumbs]`。
   終了コード: 0 成功 / 1 失敗 / 2 ロックを取れなかった（実行中、またはロックファイルを開けない）。
-  `--rebuild` は index.db（+`-wal`/`-shm`）だけを消す（user.db・サムネは残る）。`--only-member` との併用と、サーバ起動中
+  `--rebuild` は index.db（+`-wal`/`-shm`）だけを消す（user.db・thumbs.db は残る）。`--only-member` との併用と、サーバ起動中
   （設定のポートが使用中。サーバが index.db を開いたままのため）は、何もせずに終了コード 1
 
 ## 6. 設定
@@ -272,9 +285,10 @@ index.db と user.db は1つのトランザクションにできないため、u
 - 読み込み: `--config <path>`。無ければ実行ファイルと同じディレクトリの `config-dev.json` → `config.json`。先頭の BOM は無視する
 - `root` の書き戻しは一時ファイル（`<設定ファイル>.tmp`）に書いてから置き換える（途中で落ちても設定ファイルが壊れない）
 - 環境変数 `MSGVIEWER_ROOT/DATA_DIR/DB_PATH/THUMBS_DIR/PORT` が**空でなければ**優先
-- 相対パスは設定ファイルのディレクトリ基準（字句的に正規化。存在しないパスでもよい）。`data_dir`/`thumbs_dir`/`db_path` の親は起動時に作成
+- 相対パスは設定ファイルのディレクトリ基準（字句的に正規化。存在しないパスでもよい）。`data_dir`/`db_path` の親は起動時に作成。
+  user.db・thumbs.db は `data_dir` の下
 - キー: `root, data_dir, thumbs_dir, db_path, port, thumb_size, thumb_quality, incremental_months, auto_index_on_startup`。
-  `root` 以外は**必須**（1つでも欠けると起動できない）。設定ファイル自体が無い場合も起動できない（終了コード1）
+  `root` と `thumbs_dir` 以外は**必須**（1つでも欠けると起動できない）。`thumbs_dir` は旧版のサムネフォルダ（取り込みの移行元。既定 `./data/thumbs`）で、作成はしない。設定ファイル自体が無い場合も起動できない（終了コード1）
 - `auto_index_on_startup` が true かつ `root` 設定済みなら、起動時に差分取り込みをバックグラウンドで開始
 - `static/` は設定ファイルのディレクトリを優先し、無ければ実行ファイルの隣を使う
 

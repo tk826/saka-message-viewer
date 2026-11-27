@@ -230,14 +230,17 @@ async fn serve(cfg: config::Config) {
     // 前回の初期化で消し損ねた一時ファイル(*.resetting)を片付ける
     routes::admin::cleanup_reset_leftovers(&cfg);
     let db = db::Db::new(cfg.db_path.clone()).unwrap_or_else(|e| fatal("index.db", e));
+    let thumbs_db = db::Db::new_thumbs(cfg.thumbs_db_path()).unwrap_or_else(|e| fatal("thumbs.db", e));
     let user_db = db::UserDb::new(cfg.user_db_path()).unwrap_or_else(|e| fatal("user.db", e));
     let static_dir = find_static_dir(&cfg);
     let auto_index = cfg.auto_index_on_startup && cfg.root.is_some();
 
     let db_path = cfg.db_path.clone();
+    let startup_cfg = cfg.clone();
     let st = AppState {
         cfg: Arc::new(RwLock::new(cfg)),
         db,
+        thumbs_db,
         user_db,
         static_dir,
         reindex: Arc::new(state::ReindexCtl::default()),
@@ -246,8 +249,8 @@ async fn serve(cfg: config::Config) {
     logln!("listening on http://127.0.0.1:{port}");
     logln!("ブラウザで http://localhost:{port}/ を開いてください(終了するにはこのウィンドウを閉じるか Ctrl+C)");
 
-    // 孤児の検索索引行を掃除し、設定があれば起動時の差分取り込みを始める
-    // (起動を遅らせないよう裏で行う。取り込みは掃除の後)
+    // 孤児の検索索引行を掃除し、旧版のサムネフォルダを thumbs.db に取り込み、設定があれば起動時の差分取り込みを始める
+    // (起動を遅らせないよう裏で行う。取り込みは掃除・サムネの取り込みの後)
     tokio::spawn(async move {
         let cleaned = tokio::task::spawn_blocking(move || db::clean_orphan_fts_rows(&db_path)).await;
         match cleaned {
@@ -255,6 +258,16 @@ async fn serve(cfg: config::Config) {
             Ok(Ok(n)) => logln!("[startup] removed {n} orphan rows from messages_fts"),
             Ok(Err(e)) => logln!("[startup] orphan cleanup failed: {e}"),
             Err(e) => logln!("[startup] orphan cleanup failed: {e}"),
+        }
+        let imported = tokio::task::spawn_blocking(move || {
+            match db::open_thumbs_db(&startup_cfg.thumbs_db_path(), false) {
+                Ok(conn) => indexer::import_legacy_thumbs(&conn, &startup_cfg),
+                Err(e) => logln!("[startup] failed to open thumbs.db: {e}"),
+            }
+        })
+        .await;
+        if let Err(e) = imported {
+            logln!("[startup] thumbnail import failed: {e}");
         }
         if auto_index {
             routes::reindex::start_background(&st, "incremental", None);

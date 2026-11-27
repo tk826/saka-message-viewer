@@ -1,6 +1,6 @@
-//! SQLite接続。index.db(メッセージ)と user.db(お気に入り等)を別ファイルで扱う。
+//! SQLite接続。index.db(メッセージ)・thumbs.db(サムネ)・user.db(お気に入り等)を別ファイルで扱う。
 //!
-//! - index.db: 接続プール。WAL では複数リーダ同時実行できるため、1本の共有接続で直列化しない。
+//! - index.db / thumbs.db: 接続プール。WAL では複数リーダ同時実行できるため、1本の共有接続で直列化しない。
 //!   取り込み(別プロセス)が長い書き込みトランザクション中でも、無関係なリクエストを巻き込まない。
 //!   `/api/reset` が DB ファイルを消す間は、ゲート(RwLock)の書き込み側を握って新しい接続を作らせない。
 //! - user.db: 書き込みが主で同時アクセスが少ないため、単一接続+Mutex。
@@ -64,6 +64,30 @@ CREATE TABLE IF NOT EXISTS member_order (
 );
 ";
 
+/// サムネの画像(JPEG)を入れる DB。index.db と分けるのは、`--rebuild` で index.db を作り直しても
+/// サムネを作り直さずに済むようにするため(画像の分だけ大きく、作り直しに時間もかかる)。
+///
+/// - `thumbs.path`: `messages.thumb` と同じ相対パス(`{sha1(member)[:2]}/{sha1(member)}/{msg_id}.jpg`)。
+///   `/thumbs/{path}` の `{path}` もこれ。`updated_at` は書き込んだ時刻(ns)で、ETag・Last-Modified に使う
+/// - `thumb_failures`: 作れなかったサムネと、そのときの元ファイルの大きさ・更新日時(`{len}:{mtime_ns}`)。
+///   同じ元ファイルから差分取り込みのたびに作り直そうとしないため
+/// - `meta`: 旧版のサムネフォルダを取り込み済みかなど
+pub const THUMBS_DB_SCHEMA_SQL: &str = "
+CREATE TABLE IF NOT EXISTS thumbs (
+  path       TEXT PRIMARY KEY,
+  data       BLOB NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS thumb_failures (
+  path TEXT PRIMARY KEY,
+  sig  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+";
+
 /// 共通のPRAGMA。ロック競合時はすぐ失敗せず30秒までリトライ待ちする(database is locked 対策)。
 fn apply_pragmas(conn: &Connection, synchronous_normal: bool) -> rusqlite::Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -92,6 +116,22 @@ pub fn open_index_db(path: &Path, ensure_schema: bool) -> rusqlite::Result<Conne
     if ensure_schema {
         conn.execute_batch(SCHEMA_SQL)?;
         conn.execute_batch(FTS_SQL)?;
+    }
+    Ok(conn)
+}
+
+/// thumbs.db を開く。`ensure_schema` ならテーブルを作る。
+pub fn open_thumbs_db(path: &Path, ensure_schema: bool) -> rusqlite::Result<Connection> {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    apply_pragmas(&conn, true)?;
+    if ensure_schema {
+        conn.execute_batch(THUMBS_DB_SCHEMA_SQL)?;
     }
     Ok(conn)
 }
@@ -131,8 +171,12 @@ pub fn open_user_db(path: &Path) -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
+/// DB を開く関数(`open_index_db` / `open_thumbs_db`)。第2引数はスキーマを作るか。
+type Opener = fn(&Path, bool) -> rusqlite::Result<Connection>;
+
 pub struct Db {
     path: PathBuf,
+    open: Opener,
     pool: Mutex<Vec<Connection>>,
     /// 通常の利用は読み取り側、`/api/reset` のファイル削除は書き込み側で握る。
     /// 書き込み側を握っている間は、使用中の接続が無く、新しい接続も作られない。
@@ -140,11 +184,21 @@ pub struct Db {
 }
 
 impl Db {
+    /// index.db。
     pub fn new(path: PathBuf) -> rusqlite::Result<Arc<Self>> {
+        Self::with_opener(path, open_index_db)
+    }
+
+    /// thumbs.db。
+    pub fn new_thumbs(path: PathBuf) -> rusqlite::Result<Arc<Self>> {
+        Self::with_opener(path, open_thumbs_db)
+    }
+
+    fn with_opener(path: PathBuf, open: Opener) -> rusqlite::Result<Arc<Self>> {
         // 起動時に一度だけスキーマを保証する。以降の接続は作成処理を省く
         // (CREATE ... IF NOT EXISTS でも書き込みロックを一瞬取るため、取り込み中のブロック起点になる)。
-        open_index_db(&path, true)?;
-        Ok(Arc::new(Db { path, pool: Mutex::new(Vec::new()), gate: RwLock::new(()) }))
+        open(&path, true)?;
+        Ok(Arc::new(Db { path, open, pool: Mutex::new(Vec::new()), gate: RwLock::new(()) }))
     }
 
     /// プールから接続を借りて `f` をブロッキングスレッドで実行する。
@@ -158,7 +212,7 @@ impl Db {
             let _gate = this.gate.read().unwrap();
             let conn = match this.pool.lock().unwrap().pop() {
                 Some(c) => c,
-                None => open_index_db(&this.path, false)?,
+                None => (this.open)(&this.path, false)?,
             };
             let out = f(&conn);
             this.pool.lock().unwrap().push(conn);
